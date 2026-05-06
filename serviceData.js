@@ -1,5 +1,4 @@
 // Service data with durations (in minutes) and prices
-// Duration = service time + buffer, already included
 const serviceData = {
     "facial-waxing": {
         name: "Facial Waxing",
