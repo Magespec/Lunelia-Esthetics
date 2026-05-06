@@ -7,6 +7,22 @@ const consentMessage = document.getElementById("consent-message");
 
 let stripe = null;
 
+function getCookie(name) {
+    const cookies = document.cookie ? document.cookie.split(";") : [];
+    for (const cookie of cookies) {
+        const [rawKey, ...rawValueParts] = cookie.split("=");
+        const key = decodeURIComponent(String(rawKey || "").trim());
+        if (key === name) {
+            return decodeURIComponent(rawValueParts.join("=").trim());
+        }
+    }
+    return "";
+}
+
+function getClientCsrfToken() {
+    return getCookie("clientCsrf");
+}
+
 function setMessage(text) {
     if (consentMessage) {
         consentMessage.textContent = text;
@@ -84,6 +100,103 @@ form?.addEventListener("submit", async (event) => {
         return;
     }
 
+    // --- Wax pass credit booking path ---
+    if (pendingBooking.isWaxPassBooking) {
+        try {
+            const passId = Number(pendingBooking?.waxPassSelection?.passId || 0);
+            if (!passId) {
+                throw new Error("Wax pass details are missing. Please start again from your client dashboard.");
+            }
+
+            const response = await fetch(`/api/client/wax-passes/${passId}/book`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    ...(getClientCsrfToken() ? { "X-CSRF-Token": getClientCsrfToken() } : {})
+                },
+                credentials: "include",
+                body: JSON.stringify({
+                    date: pendingBooking.date,
+                    time: pendingBooking.time,
+                    timezone: pendingBooking?.customer?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
+                    phone: pendingBooking?.customer?.phone || "",
+                    consent: { accepted: true, signature }
+                })
+            });
+
+            const data = await response.json().catch(() => null);
+            if (!response.ok) {
+                throw new Error(data?.error || "Wax pass booking failed");
+            }
+
+            const remainingCredits = Number(data?.remainingCredits);
+
+            localStorage.setItem("waxPassBookingResult", JSON.stringify({
+                appointment: {
+                    name: pendingBooking?.customer?.name || "Client",
+                    date: pendingBooking.date,
+                    time: pendingBooking.time,
+                    services: pendingBooking.services || []
+                },
+                remainingCredits: Number.isFinite(remainingCredits) ? remainingCredits : null
+            }));
+
+            window.location.href = "success.html?waxpass=1";
+        } catch (error) {
+            setMessage(error.message || "Unable to complete wax pass booking.");
+            submitButton.disabled = false;
+            submitButton.textContent = "Confirm Wax Pass Booking";
+            submitButton.removeAttribute("aria-busy");
+        }
+        return;
+    }
+
+    // --- Wax pass purchase path ---
+    if (pendingBooking.isWaxPassPurchase) {
+        try {
+            const tier = Number(pendingBooking?.waxPassPurchase?.tier || 0);
+            const serviceId = String(pendingBooking?.waxPassPurchase?.serviceId || "").trim();
+            if (![1, 2, 3].includes(tier) || !serviceId) {
+                throw new Error("Wax pass details are missing. Please return to the wax pass page.");
+            }
+
+            const csrfToken = getClientCsrfToken();
+            const response = await fetch("/api/wax-passes/purchase", {
+                method: "POST",
+                credentials: "include",
+                headers: {
+                    "Content-Type": "application/json",
+                    ...(csrfToken ? { "X-CSRF-Token": csrfToken } : {})
+                },
+                body: JSON.stringify({
+                    tier,
+                    serviceId,
+                    customer: {
+                        name: String(pendingBooking?.customer?.name || "").trim(),
+                        email: String(pendingBooking?.customer?.email || "").trim(),
+                        phone: String(pendingBooking?.customer?.phone || "").trim()
+                    }
+                })
+            });
+
+            const data = await response.json().catch(() => null);
+            if (!response.ok) {
+                throw new Error(data?.error || "Unable to continue to payment.");
+            }
+            if (!data?.url) {
+                throw new Error("Unable to start payment checkout.");
+            }
+
+            window.location.href = data.url;
+        } catch (error) {
+            setMessage(error.message || "Unable to continue to payment.");
+            submitButton.disabled = false;
+            submitButton.textContent = "Continue to Payment";
+            submitButton.removeAttribute("aria-busy");
+        }
+        return;
+    }
+
     // --- Standard Stripe payment path ---
     try {
         if (!stripe) {
@@ -138,6 +251,20 @@ form?.addEventListener("submit", async (event) => {
             submitButton.textContent = "Confirm Free Booking";
         }
         // No Stripe needed for free bookings
+        return;
+    }
+
+    if (pendingBooking.isWaxPassBooking) {
+        if (submitButton) {
+            submitButton.textContent = "Confirm Wax Pass Booking";
+        }
+        return;
+    }
+
+    if (pendingBooking.isWaxPassPurchase) {
+        if (submitButton) {
+            submitButton.textContent = "Continue to Payment";
+        }
         return;
     }
 

@@ -15,6 +15,7 @@ const analyticsStartInput = document.getElementById("analytics-start");
 const analyticsEndInput = document.getElementById("analytics-end");
 const dailyAnalyticsBody = document.querySelector("#analytics-daily-table tbody");
 const dailyToggleBtn = document.getElementById("toggle-daily-performance");
+const pastAppointmentsToggleBtn = document.getElementById("toggle-past-appointments");
 const topServicesBody = document.querySelector("#analytics-services-table tbody");
 const expensesTableBody = document.querySelector("#expenses-table tbody");
 const expenseForm = document.getElementById("expense-form");
@@ -44,10 +45,15 @@ const metricNetRevenue = document.getElementById("metric-net-revenue");
 
 let isAdminAuthenticated = false;
 let dailyExpanded = false;
+let pastAppointmentsExpanded = false;
 const DAILY_VISIBLE_ROWS = 1;
+const PAST_APPOINTMENTS_VISIBLE_ROWS = 3;
 let activeAdminReschedule = null;
 let expenseUndoToast = null;
 let expenseUndoTimer = null;
+const ADMIN_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+let adminIdleLogoutTimer = null;
+let adminActivityTrackingBound = false;
 
 function ensureLocalAdminNodeOrigin() {
     const isHttp = window.location.protocol === "http:" || window.location.protocol === "https:";
@@ -98,6 +104,21 @@ function buildTimeSlots(startHour = 9, endHour = 18, intervalMinutes = 15, endMi
     }
 
     return slots;
+}
+
+function getCatalogServiceName(serviceId) {
+    const id = String(serviceId || "").trim();
+    if (!id) {
+        return "";
+    }
+
+    const services = window?.luneliaServiceCatalog?.getAllServices?.();
+    if (!Array.isArray(services)) {
+        return "";
+    }
+
+    const match = services.find((service) => String(service?.id || "") === id);
+    return String(match?.name || "").trim();
 }
 
 const adminRescheduleTimes = buildTimeSlots(9, 17, 15, 30);
@@ -193,6 +214,83 @@ function setAuthenticatedLayout(isAuthenticated) {
     if (!isAuthenticated && dashboardMessage) {
         dashboardMessage.textContent = "";
     }
+
+    if (isAuthenticated) {
+        resetAdminIdleLogoutTimer();
+    } else {
+        stopAdminIdleLogoutTimer();
+    }
+}
+
+function stopAdminIdleLogoutTimer() {
+    if (adminIdleLogoutTimer) {
+        window.clearTimeout(adminIdleLogoutTimer);
+        adminIdleLogoutTimer = null;
+    }
+}
+
+async function performAdminSignOut(message = "Signed out.") {
+    renderAppointments([]);
+    renderAnalytics({});
+    renderFinance({});
+    closeAdminReschedulePanel();
+    dismissExpenseUndoToast();
+    setAuthenticatedLayout(false);
+    pastAppointmentsExpanded = false;
+    if (reportsSection) {
+        reportsSection.hidden = true;
+    }
+    if (financeSection) {
+        financeSection.hidden = true;
+    }
+    setAdminMessage(message);
+}
+
+async function handleAdminIdleTimeout() {
+    if (!isAdminAuthenticated) {
+        return;
+    }
+
+    try {
+        await fetchAdminJson("/api/admin/logout", {
+            method: "POST"
+        });
+    } catch (error) {
+    }
+
+    await performAdminSignOut("Signed out due to inactivity.");
+}
+
+function resetAdminIdleLogoutTimer() {
+    if (!isAdminAuthenticated) {
+        return;
+    }
+
+    stopAdminIdleLogoutTimer();
+    adminIdleLogoutTimer = window.setTimeout(() => {
+        handleAdminIdleTimeout();
+    }, ADMIN_IDLE_TIMEOUT_MS);
+}
+
+function bindAdminActivityTracking() {
+    if (adminActivityTrackingBound) {
+        return;
+    }
+
+    adminActivityTrackingBound = true;
+    const activityEvents = ["click", "keydown", "mousemove", "touchstart", "scroll"];
+
+    activityEvents.forEach((eventName) => {
+        window.addEventListener(
+            eventName,
+            () => {
+                if (isAdminAuthenticated) {
+                    resetAdminIdleLogoutTimer();
+                }
+            },
+            { passive: true }
+        );
+    });
 }
 
 function readCookie(name) {
@@ -611,6 +709,17 @@ async function performAdminAppointmentAction(appointment, action) {
             const cancelRefundedCents = Number(cancelResult?.settlement?.refundedCents) || 0;
             const cancelKeptCents = Number(cancelResult?.settlement?.keptCents) || 0;
 
+            if (cancelResult?.isWaxPass) {
+                if (cancelResult?.waxPassCreditForfeited) {
+                    setAdminMessage("Appointment cancelled. Wax pass credit forfeited due to late cancellation.");
+                } else if (cancelResult?.waxPassCreditRestored) {
+                    setAdminMessage("Appointment cancelled. Wax pass credit restored.");
+                } else {
+                    setAdminMessage("Appointment cancelled.");
+                }
+                break;
+            }
+
             if (cancelFeePercent > 0) {
                 setAdminMessage(
                     `Appointment cancelled. ${cancelFeePercent}% fee kept (${formatCurrency(cancelKeptCents)}), refunded ${formatCurrency(cancelRefundedCents)}.`
@@ -630,6 +739,11 @@ async function performAdminAppointmentAction(appointment, action) {
             const noShowFeePercent = Number(noShowResult?.feePercent) || 50;
             const noShowRefundedCents = Number(noShowResult?.settlement?.refundedCents) || 0;
             const noShowKeptCents = Number(noShowResult?.settlement?.keptCents) || 0;
+
+            if (noShowResult?.isWaxPass) {
+                setAdminMessage("Appointment marked as no-show. Wax pass credit forfeited.");
+                break;
+            }
 
             setAdminMessage(
                 `Appointment marked as no-show. ${noShowFeePercent}% fee kept (${formatCurrency(noShowKeptCents)}), refunded ${formatCurrency(noShowRefundedCents)}.`
@@ -658,6 +772,9 @@ function renderAppointments(appointments) {
     closeAdminReschedulePanel();
 
     if (!appointments || appointments.length === 0) {
+        if (pastAppointmentsToggleBtn) {
+            pastAppointmentsToggleBtn.hidden = true;
+        }
         const row = document.createElement("tr");
         const cell = document.createElement("td");
         cell.colSpan = 8;
@@ -730,7 +847,42 @@ function renderAppointments(appointments) {
         const services = (() => {
             try {
                 return JSON.parse(appointment.services || "[]")
-                    .map((service) => escapeHtml(service?.name || ""))
+                    .map((service) => {
+                        if (typeof service === "string") {
+                            const catalogName = getCatalogServiceName(service);
+                            if (catalogName) {
+                                return escapeHtml(catalogName);
+                            }
+
+                            return escapeHtml(
+                                service
+                                    .replace(/[-_]+/g, " ")
+                                    .replace(/\b\w/g, (char) => char.toUpperCase())
+                            );
+                        }
+
+                        const name = String(service?.name || "").trim();
+                        if (name) {
+                            return escapeHtml(name);
+                        }
+
+                        const id = String(service?.id || "").trim();
+                        if (!id) {
+                            return "";
+                        }
+
+                        const catalogName = getCatalogServiceName(id);
+                        if (catalogName) {
+                            return escapeHtml(catalogName);
+                        }
+
+                        return escapeHtml(
+                            id
+                                .replace(/[-_]+/g, " ")
+                                .replace(/\b\w/g, (char) => char.toUpperCase())
+                        );
+                    })
+                    .filter(Boolean)
                     .join(", ");
             } catch (err) {
                 return "";
@@ -815,13 +967,28 @@ function renderAppointments(appointments) {
 
     if (pastAppointmentsTableBody) {
         if (pastAppointments.length === 0) {
+            if (pastAppointmentsToggleBtn) {
+                pastAppointmentsToggleBtn.hidden = true;
+            }
             const row = document.createElement("tr");
             row.innerHTML = '<td colspan="8">No past appointments found.</td>';
             pastAppointmentsTableBody.appendChild(row);
         } else {
-            pastAppointments.forEach((appointment) => {
+            const visiblePastAppointments = pastAppointmentsExpanded
+                ? pastAppointments
+                : pastAppointments.slice(0, PAST_APPOINTMENTS_VISIBLE_ROWS);
+
+            visiblePastAppointments.forEach((appointment) => {
                 renderAppointmentRow(appointment, pastAppointmentsTableBody);
             });
+
+            if (pastAppointmentsToggleBtn) {
+                pastAppointmentsToggleBtn.hidden =
+                    pastAppointments.length <= PAST_APPOINTMENTS_VISIBLE_ROWS;
+                pastAppointmentsToggleBtn.textContent = pastAppointmentsExpanded
+                    ? "Show fewer past appointments"
+                    : "Show all past appointments";
+            }
         }
     }
 }
@@ -1126,6 +1293,16 @@ dailyToggleBtn?.addEventListener("click", () => {
     });
 });
 
+pastAppointmentsToggleBtn?.addEventListener("click", async () => {
+    pastAppointmentsExpanded = !pastAppointmentsExpanded;
+
+    try {
+        await loadAppointments();
+    } catch (error) {
+        setAdminMessage(error.message || "Unable to refresh appointments");
+    }
+});
+
 expenseForm?.addEventListener("submit", async (event) => {
     event.preventDefault();
 
@@ -1169,23 +1346,12 @@ adminLogoutButton?.addEventListener("click", async () => {
         // Ignore logout failures and still clear the UI state.
     }
 
-    renderAppointments([]);
-    renderAnalytics({});
-    renderFinance({});
-    closeAdminReschedulePanel();
-    dismissExpenseUndoToast();
-    setAuthenticatedLayout(false);
-    if (reportsSection) {
-        reportsSection.hidden = true;
-    }
-    if (financeSection) {
-        financeSection.hidden = true;
-    }
-    setAdminMessage("Signed out.");
+    await performAdminSignOut("Signed out.");
 });
 
 setDefaultDateRange();
 setAuthenticatedLayout(false);
+bindAdminActivityTracking();
 
 if (expenseDateInput) {
     expenseDateInput.value = toIsoDate(new Date());

@@ -24,15 +24,22 @@ const PUBLIC_APP_URL = String(
 const IS_PRODUCTION = process.env.NODE_ENV === "production";
 const CLIENT_SESSION_COOKIE = "clientSession";
 const CLIENT_CSRF_COOKIE = "clientCsrf";
-const CLIENT_SESSION_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 30;
+const CLIENT_SESSION_MAX_AGE_MS = 1000 * 60 * 60 * 12;
+const CLIENT_IDLE_TIMEOUT_MS = 1000 * 60 * 30;
 const ADMIN_SESSION_COOKIE = "adminSession";
 const ADMIN_CSRF_COOKIE = "adminCsrf";
 const ADMIN_SESSION_MAX_AGE_MS = 1000 * 60 * 60 * 12;
+const ADMIN_IDLE_TIMEOUT_MS = 1000 * 60 * 30;
 const ADMIN_RATE_LIMIT_WINDOW_MS = parsePositiveIntEnv(
     "ADMIN_RATE_LIMIT_WINDOW_MS",
     15 * 60 * 1000
 );
 const ADMIN_RATE_LIMIT_MAX = parsePositiveIntEnv("ADMIN_RATE_LIMIT_MAX", 100);
+const API_RATE_LIMIT_WINDOW_MS = parsePositiveIntEnv(
+    "API_RATE_LIMIT_WINDOW_MS",
+    15 * 60 * 1000
+);
+const API_RATE_LIMIT_MAX = parsePositiveIntEnv("API_RATE_LIMIT_MAX", 300);
 
 if (!CLIENT_TOKEN_SECRET || CLIENT_TOKEN_SECRET.length < 32) {
     throw new Error("CLIENT_TOKEN_SECRET must be set and at least 32 characters long");
@@ -140,11 +147,20 @@ app.use(
     })
 );
 app.use(
+    "/api",
     rateLimit({
-        windowMs: 15 * 60 * 1000,
-        max: 300,
+        windowMs: API_RATE_LIMIT_WINDOW_MS,
+        max: API_RATE_LIMIT_MAX,
         standardHeaders: true,
-        legacyHeaders: false
+        legacyHeaders: false,
+        skip(req) {
+            if (req.originalUrl === WEBHOOK_PATH) {
+                return true;
+            }
+
+            return req.originalUrl.startsWith("/api/admin");
+        },
+        message: { error: "Too many requests. Please try again later." }
     })
 );
 app.use(
@@ -381,8 +397,57 @@ async function initializeDatabase() {
             "ALTER TABLE clients ADD COLUMN IF NOT EXISTS reset_password_expires_at TIMESTAMP"
         );
         await pool.query(
+            "ALTER TABLE clients ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE"
+        );
+        await pool.query(
+            "ALTER TABLE clients ADD COLUMN IF NOT EXISTS email_verification_token_hash TEXT"
+        );
+        await pool.query(
+            "ALTER TABLE clients ADD COLUMN IF NOT EXISTS email_verification_expires_at TIMESTAMP"
+        );
+        await pool.query(
+            `
+                UPDATE clients
+                SET email_verified = TRUE
+                WHERE COALESCE(email_verified, FALSE) = FALSE
+                  AND email_verification_token_hash IS NULL
+                  AND email_verification_expires_at IS NULL
+            `
+        );
+        await pool.query(
             "UPDATE appointments SET duration_minutes = 30 WHERE duration_minutes IS NULL"
         );
+
+        // ── Wax pass tables ──────────────────────────────────────────────────────
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS wax_passes (
+                id                  SERIAL PRIMARY KEY,
+                client_id           INTEGER NOT NULL REFERENCES clients(id),
+                service_id          TEXT NOT NULL,
+                service_name        TEXT NOT NULL,
+                tier                INTEGER NOT NULL,
+                total_credits       INTEGER NOT NULL,
+                paid_credits        INTEGER NOT NULL,
+                used_credits        INTEGER NOT NULL DEFAULT 0,
+                price_paid_cents    INTEGER NOT NULL,
+                per_use_price_cents INTEGER NOT NULL,
+                stripe_session_id   TEXT,
+                stripe_payment_id   TEXT,
+                status              TEXT NOT NULL DEFAULT 'active',
+                created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        await pool.query(
+            `CREATE UNIQUE INDEX IF NOT EXISTS wax_passes_stripe_session_id_unique
+             ON wax_passes (stripe_session_id)`
+        );
+        await pool.query(
+            "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS wax_pass_id INTEGER REFERENCES wax_passes(id)"
+        );
+        await pool.query(
+            "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS wax_pass_credit_forfeited BOOLEAN NOT NULL DEFAULT FALSE"
+        );
+        // ────────────────────────────────────────────────────────────────────────
 
         await migrateAppointmentDateTimeColumns();
 
@@ -479,6 +544,11 @@ async function settleAppointmentPolicyWithStripe(appointment, feePercent, reason
         return baseSettlement;
     }
 
+    // Wax-pass appointment tokens are not real Stripe Payment Intents — skip Stripe entirely
+    if (!stripePaymentIntentId.startsWith("pi_")) {
+        return { ...baseSettlement, hasStripePayment: false };
+    }
+
     const paymentIntent = await stripe.paymentIntents.retrieve(stripePaymentIntentId, {
         expand: ["charges.data.refunds"]
     });
@@ -572,8 +642,150 @@ for (const category of Object.values(serviceData || {})) {
     }
 }
 
+// ─── Wax Pass Tier Definitions ───────────────────────────────────────────────
+const WAX_PASS_TIERS = {
+    1: { paid: 5, free: 1, total: 6,  label: "Buy 5, Get 1 Free",  discountPct: 16.7 },
+    2: { paid: 7, free: 2, total: 9,  label: "Buy 7, Get 2 Free",  discountPct: 22.2 },
+    3: { paid: 9, free: 3, total: 12, label: "Buy 9, Get 3 Free",  discountPct: 25.0 }
+};
+
+// Services available for Tier 1 & 2
+const WAX_PASS_ALL_IDS = [
+    "brows", "upper-lip", "lower-lip", "chin", "full-face", "neck", "cheeks",
+    "sideburns", "nose", "ears", "hairline",
+    "brazilian", "bikini-full", "bikini-line-v", "bikini-line-f",
+    "inner-thigh", "full-butt", "butt-strip", "nipples",
+    "full-arms", "half-arms", "full-legs", "lower-legs", "upper-legs",
+    "underarms", "full-back", "upper-back", "mid-back", "lower-back",
+    "chest-full", "chest-strip", "stomach-full", "stomach-strip",
+    "hands", "knees", "toes"
+];
+
+// Restricted list for Tier 3 only
+const WAX_PASS_TIER3_IDS = [
+    "brows", "upper-lip", "lower-lip", "chin", "neck", "cheeks",
+    "sideburns", "nose", "ears", "hairline",
+    "inner-thigh", "butt-strip", "nipples", "stomach-strip",
+    "hands", "knees", "toes"
+];
+
+function getWaxPassServiceIds(tier) {
+    return Number(tier) === 3 ? WAX_PASS_TIER3_IDS : WAX_PASS_ALL_IDS;
+}
+
+function buildWaxPassCatalog(tier) {
+    const tierDef = WAX_PASS_TIERS[Number(tier)];
+    if (!tierDef) { return []; }
+    return getWaxPassServiceIds(tier)
+        .map((id) => {
+            const svc = canonicalServicesById.get(id);
+            if (!svc) { return null; }
+            const pricePaidCents   = svc.price * 100 * tierDef.paid;
+            const perUsePriceCents = Math.round(pricePaidCents / tierDef.total);
+            const savingsCents     = svc.price * 100 * tierDef.total - pricePaidCents;
+            return {
+                id: svc.id,
+                name: svc.name,
+                price: svc.price,
+                fullPriceDollars: svc.price,
+                pricePaidCents,
+                perUsePriceCents,
+                savingsCents
+            };
+        })
+        .filter(Boolean);
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 function getServicesTotalDuration(services) {
     return services.reduce((sum, service) => sum + service.duration, 0);
+}
+
+async function finalizeWaxPassPurchaseFromSession(session, expectedClientId = null) {
+    if (!session || session.payment_status !== "paid") {
+        throw new Error("Payment not completed");
+    }
+
+    const sessionId = String(session.id || "").trim();
+    const meta = session.metadata || {};
+
+    if (meta.type !== "wax_pass_purchase") {
+        throw new Error("Invalid session type");
+    }
+
+    const clientId = Number(meta.clientId || 0);
+    if (!clientId) {
+        throw new Error("Missing wax pass client ID");
+    }
+
+    if (expectedClientId !== null && Number(expectedClientId) !== clientId) {
+        const ownershipError = new Error("Session does not belong to this account");
+        ownershipError.statusCode = 403;
+        throw ownershipError;
+    }
+
+    const existing = await pool.query(
+        `SELECT id, service_id, service_name, tier, total_credits, paid_credits,
+                used_credits, price_paid_cents, per_use_price_cents, status, created_at
+         FROM wax_passes
+         WHERE stripe_session_id = $1
+         LIMIT 1`,
+        [sessionId]
+    );
+
+    if (existing.rows.length > 0) {
+        return existing.rows[0];
+    }
+
+    let inserted;
+    try {
+        inserted = await pool.query(
+            `INSERT INTO wax_passes
+                (client_id, service_id, service_name, tier, total_credits, paid_credits,
+                 used_credits, price_paid_cents, per_use_price_cents, stripe_session_id,
+                 stripe_payment_id, status)
+             VALUES ($1,$2,$3,$4,$5,$6,0,$7,$8,$9,$10,'active')
+             RETURNING id, service_id, service_name, tier, total_credits, paid_credits,
+                       used_credits, price_paid_cents, per_use_price_cents, status, created_at`,
+            [
+                clientId,
+                String(meta.serviceId || "").trim(),
+                String(meta.serviceName || "").trim(),
+                Number(meta.tier),
+                Number(meta.totalCredits),
+                Number(meta.paidCredits),
+                Number(meta.pricePaidCents),
+                Number(meta.perUsePriceCents),
+                sessionId,
+                session.payment_intent || null
+            ]
+        );
+    } catch (error) {
+        if (error?.code !== "23505") {
+            throw error;
+        }
+
+        inserted = { rows: [] };
+    }
+
+    if (inserted.rows.length > 0) {
+        return inserted.rows[0];
+    }
+
+    const fallback = await pool.query(
+        `SELECT id, service_id, service_name, tier, total_credits, paid_credits,
+                used_credits, price_paid_cents, per_use_price_cents, status, created_at
+         FROM wax_passes
+         WHERE stripe_session_id = $1
+         LIMIT 1`,
+        [sessionId]
+    );
+
+    if (fallback.rows.length === 0) {
+        throw new Error("Wax pass could not be finalized");
+    }
+
+    return fallback.rows[0];
 }
 
 function sanitizeServices(services) {
@@ -818,11 +1030,13 @@ function decodeBasicAuthCredentials(authHeader) {
 }
 
 function createClientToken(client) {
+    const nowSeconds = Math.floor(Date.now() / 1000);
     const payload = Buffer.from(
         JSON.stringify({
             id: client.id,
             email: normalizeEmail(client.email),
-            exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 30
+            iat: nowSeconds,
+            exp: nowSeconds + Math.floor(CLIENT_SESSION_MAX_AGE_MS / 1000)
         })
     ).toString("base64url");
 
@@ -835,11 +1049,13 @@ function createClientToken(client) {
 }
 
 function createAdminToken(adminUser) {
+    const nowSeconds = Math.floor(Date.now() / 1000);
     const payload = Buffer.from(
         JSON.stringify({
             user: String(adminUser || "").trim(),
             role: "admin",
-            exp: Math.floor(Date.now() / 1000) + Math.floor(ADMIN_SESSION_MAX_AGE_MS / 1000)
+            iat: nowSeconds,
+            exp: nowSeconds + Math.floor(ADMIN_SESSION_MAX_AGE_MS / 1000)
         })
     ).toString("base64url");
 
@@ -901,12 +1117,22 @@ function attachClientSession(res, client) {
     res.cookie(CLIENT_CSRF_COOKIE, csrfToken, buildSessionCookieOptions(false));
 }
 
+function refreshClientSession(res, client) {
+    const token = createClientToken(client);
+    res.cookie(CLIENT_SESSION_COOKIE, token, buildSessionCookieOptions(true));
+}
+
 function attachAdminSession(res, adminUser) {
     const token = createAdminToken(adminUser);
     const csrfToken = crypto.randomBytes(32).toString("hex");
 
     res.cookie(ADMIN_SESSION_COOKIE, token, buildSessionCookieOptions(true, ADMIN_SESSION_MAX_AGE_MS));
     res.cookie(ADMIN_CSRF_COOKIE, csrfToken, buildSessionCookieOptions(false, ADMIN_SESSION_MAX_AGE_MS));
+}
+
+function refreshAdminSession(res, adminUser) {
+    const token = createAdminToken(adminUser);
+    res.cookie(ADMIN_SESSION_COOKIE, token, buildSessionCookieOptions(true, ADMIN_SESSION_MAX_AGE_MS));
 }
 
 function clearClientSession(res) {
@@ -1035,7 +1261,26 @@ function requireClient(req, res, next) {
     const payload = verifyClientToken(token);
 
     if (!payload) {
+        clearClientSession(res);
         return res.status(401).json({ error: "Invalid or expired session" });
+    }
+
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const issuedAtSeconds = Number(payload.iat);
+    const idleAgeSeconds = Number.isFinite(issuedAtSeconds)
+        ? nowSeconds - issuedAtSeconds
+        : Number.POSITIVE_INFINITY;
+
+    if (idleAgeSeconds > Math.floor(CLIENT_IDLE_TIMEOUT_MS / 1000)) {
+        clearClientSession(res);
+        return res.status(401).json({ error: "Session expired due to inactivity" });
+    }
+
+    if (!String(req.headers.authorization || "").startsWith("Bearer ")) {
+        refreshClientSession(res, {
+            id: payload.id,
+            email: payload.email
+        });
     }
 
     req.clientAuth = payload;
@@ -1071,7 +1316,23 @@ function requireAdmin(req, res, next) {
 
     const payload = verifyAdminToken(token);
     if (!payload) {
+        clearAdminSession(res);
         return res.status(401).json({ error: "Invalid or expired admin session" });
+    }
+
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const issuedAtSeconds = Number(payload.iat);
+    const idleAgeSeconds = Number.isFinite(issuedAtSeconds)
+        ? nowSeconds - issuedAtSeconds
+        : Number.POSITIVE_INFINITY;
+
+    if (idleAgeSeconds > Math.floor(ADMIN_IDLE_TIMEOUT_MS / 1000)) {
+        clearAdminSession(res);
+        return res.status(401).json({ error: "Admin session expired due to inactivity" });
+    }
+
+    if (!String(req.headers.authorization || "").startsWith("Bearer ")) {
+        refreshAdminSession(res, payload.user);
     }
 
     req.adminAuth = payload;
@@ -1099,6 +1360,61 @@ function requireAdminCsrf(req, res, next) {
     return next();
 }
 
+function requireClientPage(req, res, next) {
+    const token = getClientTokenFromRequest(req);
+    const payload = verifyClientToken(token);
+
+    if (!payload) {
+        clearClientSession(res);
+        return res.redirect(302, "/client-login.html");
+    }
+
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const issuedAtSeconds = Number(payload.iat);
+    const idleAgeSeconds = Number.isFinite(issuedAtSeconds)
+        ? nowSeconds - issuedAtSeconds
+        : Number.POSITIVE_INFINITY;
+
+    if (idleAgeSeconds > Math.floor(CLIENT_IDLE_TIMEOUT_MS / 1000)) {
+        clearClientSession(res);
+        return res.redirect(302, "/client-login.html");
+    }
+
+    refreshClientSession(res, {
+        id: payload.id,
+        email: payload.email
+    });
+
+    req.clientAuth = payload;
+    return next();
+}
+
+function requireAdminPage(req, res, next) {
+    const token = getAdminTokenFromRequest(req);
+    const payload = verifyAdminToken(token);
+
+    if (!payload) {
+        clearAdminSession(res);
+        return res.redirect(302, "/admin-login.html");
+    }
+
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const issuedAtSeconds = Number(payload.iat);
+    const idleAgeSeconds = Number.isFinite(issuedAtSeconds)
+        ? nowSeconds - issuedAtSeconds
+        : Number.POSITIVE_INFINITY;
+
+    if (idleAgeSeconds > Math.floor(ADMIN_IDLE_TIMEOUT_MS / 1000)) {
+        clearAdminSession(res);
+        return res.redirect(302, "/admin-login.html");
+    }
+
+    refreshAdminSession(res, payload.user);
+
+    req.adminAuth = payload;
+    return next();
+}
+
 app.post("/api/admin/login", async (req, res) => {
     try {
         const user = String(req.body?.username || "").trim();
@@ -1117,6 +1433,14 @@ app.post("/api/admin/login", async (req, res) => {
     } catch (error) {
         return sendInternalError(res, "Admin login error:", error);
     }
+});
+
+app.get(["/admin", "/admin.html"], requireAdminPage, (req, res) => {
+    res.sendFile(path.join(__dirname, "admin.html"));
+});
+
+app.get(["/client", "/client.html"], requireClientPage, (req, res) => {
+    res.sendFile(path.join(__dirname, "client.html"));
 });
 
 app.get("/api/admin/session", requireAdmin, async (req, res) => {
@@ -1419,6 +1743,7 @@ app.post("/api/create-payment-intent", async (req, res) => {
                 }
             ],
             mode: "payment",
+            customer_email: customerEmail || undefined,
             success_url: `${PUBLIC_APP_URL}/success.html?session_id={CHECKOUT_SESSION_ID}`,
             cancel_url: `${PUBLIC_APP_URL}/booking.html`,
             metadata: {
@@ -1438,8 +1763,7 @@ app.post("/api/create-payment-intent", async (req, res) => {
                     const svc = sanitizedServices.find((s) => s.id === id);
                     return svc ? sum + (overrideCents - svc.price * 100) : sum;
                 }, 0))
-            },
-            customer_email: customerEmail || undefined
+            }
         });
         
         // Save session info to database
@@ -1692,6 +2016,62 @@ app.post(WEBHOOK_PATH, express.raw({ type: "application/json" }), async (req, re
                 "UPDATE payments SET status = $1, stripe_payment_intent_id = $2 WHERE stripe_session_id = $3",
                 ["completed", session.payment_intent, session.id]
             );
+
+            if (session?.metadata?.type === "wax_pass_purchase") {
+                const waxPass = await finalizeWaxPassPurchaseFromSession(session);
+
+                // Send purchase confirmation email
+                if (waxPass && process.env.EMAIL_USER && process.env.EMAIL_PASS) {
+                    try {
+                        const clientId = Number(session.metadata?.clientId || 0);
+                        const clientRow = clientId
+                            ? (await pool.query("SELECT name, email FROM clients WHERE id = $1 LIMIT 1", [clientId])).rows[0]
+                            : null;
+
+                        const clientName = clientRow?.name || "Valued Client";
+                        const clientEmail = clientRow?.email || session.customer_details?.email || null;
+
+                        if (clientEmail) {
+                            const tierLabels = { 1: "Tier 1 (5 credits)", 2: "Tier 2 (8 credits)", 3: "Tier 3 (12 credits — full body)" };
+                            const tierLabel = tierLabels[Number(waxPass.tier)] || `Tier ${waxPass.tier}`;
+                            const serviceName = String(waxPass.service_name || session.metadata?.serviceName || "").trim() || "Wax Service";
+                            const amountPaid = (Number(waxPass.price_paid_cents || session.amount_total || 0) / 100).toFixed(2);
+                            const totalCredits = Number(waxPass.total_credits);
+
+                            await transporter.sendMail({
+                                from: process.env.EMAIL_USER,
+                                to: clientEmail,
+                                subject: "Wax Pass Purchase Confirmed - Lunelia Esthetics",
+                                html: `
+                                    <h2>Your Wax Pass is Ready!</h2>
+                                    <p>Hi ${clientName},</p>
+                                    <p>Thank you for purchasing a Wax Pass with Lunelia Esthetics. Your pass is now active and ready to use.</p>
+
+                                    <h3>Pass Details</h3>
+                                    <p><strong>Service:</strong> ${serviceName}</p>
+                                    <p><strong>Pass Tier:</strong> ${tierLabel}</p>
+                                    <p><strong>Credits Included:</strong> ${totalCredits}</p>
+                                    <p><strong>Amount Paid:</strong> $${amountPaid}</p>
+
+                                    <p>You can book your appointments using your Wax Pass credits by signing into your client portal.</p>
+
+                                    <h3>Wax Pass Policy</h3>
+                                    <ul>
+                                        <li>Wax Pass credits are non-refundable.</li>
+                                        <li>If you are late or no-show for an appointment booked with a wax pass, that wax pass credit is considered spent and is non-refundable.</li>
+                                        <li>Cancellations made with more than 24 hours' notice will have their credit returned to your pass.</li>
+                                    </ul>
+
+                                    <p>We look forward to seeing you!</p>
+                                    <p>Lunelia Esthetics</p>
+                                `
+                            });
+                        }
+                    } catch (emailError) {
+                        console.error("Wax pass confirmation email error:", emailError);
+                    }
+                }
+            }
         } catch (err) {
             console.error("Webhook update error:", err);
         }
@@ -1705,6 +2085,11 @@ app.post("/api/client/register", async (req, res) => {
         const name = String(req.body?.name || "").trim();
         const email = normalizeEmail(req.body?.email || "");
         const password = String(req.body?.password || "");
+        const rawVerificationToken = crypto.randomBytes(32).toString("hex");
+        const verificationTokenHash = hashResetToken(rawVerificationToken);
+        const verificationExpiry = new Date(Date.now() + 1000 * 60 * 60 * 24);
+        const apiOrigin = `${req.protocol}://${req.get("host")}`;
+        const verifyLink = `${PUBLIC_APP_URL}/verify-email.html?token=${encodeURIComponent(rawVerificationToken)}&email=${encodeURIComponent(email)}&api=${encodeURIComponent(apiOrigin)}`;
 
         if (!email || !/^\S+@\S+\.\S+$/.test(email)) {
             return res.status(400).json({ error: "Valid email is required" });
@@ -1715,31 +2100,35 @@ app.post("/api/client/register", async (req, res) => {
         }
 
         const result = await pool.query(
-            "INSERT INTO clients (name, email, password_hash) VALUES ($1, $2, $3) RETURNING id, name, email",
-            [name || null, email, hashPassword(password)]
+            `
+                INSERT INTO clients (
+                    name,
+                    email,
+                    password_hash,
+                    email_verified,
+                    email_verification_token_hash,
+                    email_verification_expires_at
+                )
+                VALUES ($1, $2, $3, FALSE, $4, $5)
+                RETURNING id, name, email
+            `,
+            [name || null, email, hashPassword(password), verificationTokenHash, verificationExpiry]
         );
 
         const client = result.rows[0];
-        const clientSession = {
-            id: client.id,
-            email: client.email,
-            name: client.name
-        };
-
-        attachClientSession(res, clientSession);
 
         if (client?.email && process.env.EMAIL_USER && process.env.EMAIL_PASS) {
             try {
                 await transporter.sendMail({
                     from: process.env.EMAIL_USER,
                     to: client.email,
-                    subject: "Your Lunelia Esthetics Account Is Ready",
+                    subject: "Verify Your Lunelia Esthetics Account",
                     html: `
                         <h2>Welcome to Lunelia Esthetics</h2>
                         <p>Hi ${client.name || "there"},</p>
                         <p>Your client account has been created successfully.</p>
-                        <p>You can sign in anytime to manage your bookings.</p>
-                        <p><a href="${PUBLIC_APP_URL}/client.html">Sign in to your client portal</a></p>
+                        <p>Please verify your email before signing in.</p>
+                        <p><a href="${verifyLink}">Verify your email</a></p>
                     `
                 });
             } catch (emailError) {
@@ -1747,10 +2136,12 @@ app.post("/api/client/register", async (req, res) => {
             }
         }
 
-        return res.json({
+        const payload = {
             success: true,
-            client: clientSession
-        });
+            message: "Account created. Please verify your email before signing in."
+        };
+
+        return res.json(payload);
     } catch (error) {
         if (error.code === "23505") {
             return res.status(409).json({ error: "Account already exists for this email" });
@@ -1765,13 +2156,25 @@ app.post("/api/client/login", async (req, res) => {
         const password = String(req.body?.password || "");
 
         const result = await pool.query(
-            "SELECT id, name, email, password_hash FROM clients WHERE LOWER(email) = LOWER($1) LIMIT 1",
+            `
+                SELECT id, name, email, password_hash, COALESCE(email_verified, FALSE) AS email_verified
+                FROM clients
+                WHERE LOWER(email) = LOWER($1)
+                LIMIT 1
+            `,
             [email]
         );
 
         const client = result.rows[0];
         if (!client || !verifyPassword(password, client.password_hash)) {
             return res.status(401).json({ error: "Invalid email or password" });
+        }
+
+        if (!client.email_verified) {
+            return res.status(403).json({
+                error: "Please verify your email before signing in.",
+                requiresVerification: true
+            });
         }
 
         const clientSession = {
@@ -1788,6 +2191,62 @@ app.post("/api/client/login", async (req, res) => {
         });
     } catch (error) {
         return sendInternalError(res, "Client login error:", error);
+    }
+});
+
+app.post("/api/client/verify-email", async (req, res) => {
+    try {
+        const email = normalizeEmail(req.body?.email || "");
+        const token = String(req.body?.token || "").trim();
+
+        if (!token) {
+            return res.status(400).json({ error: "Verification token is required" });
+        }
+
+        const tokenHash = hashResetToken(token);
+        const result = await pool.query(
+            `
+                SELECT id, name, email
+                FROM clients
+                WHERE email_verification_token_hash = $1
+                  AND email_verification_expires_at IS NOT NULL
+                  AND email_verification_expires_at > NOW()
+                LIMIT 1
+            `,
+            [tokenHash]
+        );
+
+        const client = result.rows[0] || null;
+        if (!client) {
+            return res.status(400).json({ error: "Invalid or expired verification link" });
+        }
+
+        if (email && normalizeEmail(client.email) !== email) {
+            return res.status(400).json({ error: "Invalid or expired verification link" });
+        }
+
+        await pool.query(
+            `
+                UPDATE clients
+                SET email_verified = TRUE,
+                    email_verification_token_hash = NULL,
+                    email_verification_expires_at = NULL
+                WHERE id = $1
+            `,
+            [client.id]
+        );
+
+        return res.json({
+            success: true,
+            message: "Email verified. You can now sign in.",
+            client: {
+                id: client.id,
+                name: client.name,
+                email: client.email
+            }
+        });
+    } catch (error) {
+        return sendInternalError(res, "Client verify-email error:", error);
     }
 });
 
@@ -2102,13 +2561,14 @@ app.post("/api/client/appointments/:id/cancel", requireClient, requireCsrf, asyn
         const email = normalizeEmail(req.clientAuth?.email || "");
 
         const result = await pool.query(
-            `
-                                SELECT id, date::text AS date, TO_CHAR(time, 'HH24:MI') AS time, status, price, stripe_payment_id
-                FROM appointments
-                WHERE id = $1
-                  AND LOWER(email) = LOWER($2)
-                LIMIT 1
-            `,
+                        `
+                                SELECT id, date::text AS date, TO_CHAR(time, 'HH24:MI') AS time, status, price,
+                                             stripe_payment_id, wax_pass_id
+                                FROM appointments
+                                WHERE id = $1
+                                    AND LOWER(email) = LOWER($2)
+                                LIMIT 1
+                        `,
             [appointmentId, email]
         );
 
@@ -2128,12 +2588,40 @@ app.post("/api/client/appointments/:id/cancel", requireClient, requireCsrf, asyn
             "client_cancel"
         );
 
-        await pool.query(
-            "UPDATE appointments SET status = 'cancelled', cancelled_at = NOW(), cancellation_fee_percent = $1, no_show_fee_percent = 0 WHERE id = $2",
-            [feePercent, appointmentId]
-        );
+        const waxPassId = Number(appointment.wax_pass_id) || 0;
+        let waxPassCreditForfeited = false;
+        let waxPassCreditRestored = false;
 
-        return res.json({ success: true, feePercent, settlement });
+        if (waxPassId && feePercent > 0) {
+            await pool.query(
+                `UPDATE appointments SET status = 'cancelled', cancelled_at = NOW(),
+                        cancellation_fee_percent = $1, no_show_fee_percent = 0,
+                        wax_pass_credit_forfeited = TRUE WHERE id = $2`,
+                [feePercent, appointmentId]
+            );
+            waxPassCreditForfeited = true;
+        } else if (waxPassId && feePercent === 0) {
+            await pool.query(
+                `UPDATE appointments SET status = 'cancelled', cancelled_at = NOW(),
+                        cancellation_fee_percent = $1, no_show_fee_percent = 0,
+                        wax_pass_credit_forfeited = FALSE WHERE id = $2`,
+                [feePercent, appointmentId]
+            );
+            await pool.query(
+                `UPDATE wax_passes SET used_credits = GREATEST(0, used_credits - 1),
+                     status = CASE WHEN status = 'completed' THEN 'active' ELSE status END
+                 WHERE id = $1`,
+                [waxPassId]
+            );
+            waxPassCreditRestored = true;
+        } else {
+            await pool.query(
+                "UPDATE appointments SET status = 'cancelled', cancelled_at = NOW(), cancellation_fee_percent = $1, no_show_fee_percent = 0 WHERE id = $2",
+                [feePercent, appointmentId]
+            );
+        }
+
+        return res.json({ success: true, feePercent, settlement, isWaxPass: waxPassId > 0, waxPassCreditForfeited, waxPassCreditRestored });
     } catch (error) {
         return sendInternalError(res, "Client cancel error:", error);
     }
@@ -2148,7 +2636,7 @@ app.post("/api/admin/appointments/:id/no-show", requireAdmin, requireAdminCsrf, 
 
         const existing = await pool.query(
             `
-                SELECT id, status, price, stripe_payment_id
+                SELECT id, status, price, stripe_payment_id, wax_pass_id
                 FROM appointments
                 WHERE id = $1
                 LIMIT 1
@@ -2171,13 +2659,16 @@ app.post("/api/admin/appointments/:id/no-show", requireAdmin, requireAdminCsrf, 
             "admin_no_show"
         );
 
+        const waxPassId = Number(appointment.wax_pass_id) || 0;
+
         const result = await pool.query(
             `
                 UPDATE appointments
                 SET status = 'no_show',
                     no_show_fee_percent = 50,
                     cancellation_fee_percent = 0,
-                    cancelled_at = NULL
+                    cancelled_at = NULL,
+                    wax_pass_credit_forfeited = CASE WHEN wax_pass_id IS NOT NULL THEN TRUE ELSE FALSE END
                 WHERE id = $1
                   AND status IN ('confirmed', 'late')
                 RETURNING id
@@ -2189,7 +2680,9 @@ app.post("/api/admin/appointments/:id/no-show", requireAdmin, requireAdminCsrf, 
             success: true,
             id: result.rows[0].id,
             feePercent: 50,
-            settlement
+            settlement,
+            isWaxPass: waxPassId > 0,
+            waxPassCreditForfeited: waxPassId > 0
         });
     } catch (error) {
         return sendInternalError(res, "Admin no-show error:", error);
@@ -2234,11 +2727,20 @@ app.post("/api/admin/appointments/:id/reverse-no-show", requireAdmin, requireAdm
             return res.status(400).json({ error: "Invalid appointment ID" });
         }
 
+        const existing = await pool.query(
+            "SELECT id, status, wax_pass_id FROM appointments WHERE id = $1 LIMIT 1",
+            [appointmentId]
+        );
+        if (existing.rows.length === 0) {
+            return res.status(404).json({ error: "Appointment not found" });
+        }
+
         const result = await pool.query(
             `
                 UPDATE appointments
                 SET status = 'confirmed',
-                    no_show_fee_percent = 0
+                    no_show_fee_percent = 0,
+                    wax_pass_credit_forfeited = FALSE
                 WHERE id = $1
                   AND status = 'no_show'
                 RETURNING id
@@ -2250,7 +2752,19 @@ app.post("/api/admin/appointments/:id/reverse-no-show", requireAdmin, requireAdm
             return res.status(400).json({ error: "Only no-show appointments can be reversed" });
         }
 
-        return res.json({ success: true, id: result.rows[0].id });
+        // Restore wax pass credit when reversing a no-show
+        const waxPassId = Number(existing.rows[0].wax_pass_id) || 0;
+        if (waxPassId) {
+            await pool.query(
+                `UPDATE wax_passes
+                 SET used_credits = GREATEST(0, used_credits - 1),
+                     status = CASE WHEN status = 'completed' THEN 'active' ELSE status END
+                 WHERE id = $1`,
+                [waxPassId]
+            );
+        }
+
+        return res.json({ success: true, id: result.rows[0].id, waxPassCreditRestored: waxPassId > 0 });
     } catch (error) {
         return sendInternalError(res, "Admin reverse no-show error:", error);
     }
@@ -2630,7 +3144,12 @@ app.get("/api/admin/analytics", requireAdmin, async (req, res) => {
 app.get("/api/admin/appointments", requireAdmin, async (req, res) => {
     try {
         const result = await pool.query(
-            "SELECT id, TO_CHAR(date, 'YYYY-MM-DD') AS date, TO_CHAR(time, 'HH24:MI') AS time, COALESCE(duration_minutes, 30) AS duration_minutes, services, email, name, phone, price, timezone, status, created_at FROM appointments ORDER BY created_at DESC"
+            `SELECT id, TO_CHAR(date, 'YYYY-MM-DD') AS date, TO_CHAR(time, 'HH24:MI') AS time,
+                    COALESCE(duration_minutes, 30) AS duration_minutes, services, email, name, phone,
+                    price, timezone, status, created_at,
+                    wax_pass_id,
+                    COALESCE(wax_pass_credit_forfeited, FALSE) AS wax_pass_credit_forfeited
+             FROM appointments ORDER BY created_at DESC`
         );
         res.json(result.rows || []);
     } catch (err) {
@@ -2648,7 +3167,8 @@ app.post("/api/admin/appointments/:id/cancel", requireAdmin, requireAdminCsrf, a
 
         const existing = await pool.query(
             `
-                SELECT id, date::text AS date, TO_CHAR(time, 'HH24:MI') AS time, status, price, stripe_payment_id
+                SELECT id, date::text AS date, TO_CHAR(time, 'HH24:MI') AS time, status, price,
+                       stripe_payment_id, wax_pass_id
                 FROM appointments
                 WHERE id = $1
                 LIMIT 1
@@ -2671,20 +3191,52 @@ app.post("/api/admin/appointments/:id/cancel", requireAdmin, requireAdminCsrf, a
             feePercent,
             "admin_cancel"
         );
+        const waxPassId = Number(appointment.wax_pass_id) || 0;
+        let waxPassCreditForfeited = false;
+        let waxPassCreditRestored = false;
 
-        const result = await pool.query(
-            `
-                UPDATE appointments
-                SET status = 'cancelled',
-                    cancelled_at = NOW(),
-                    cancellation_fee_percent = $1,
-                    no_show_fee_percent = 0
-                WHERE id = $2
-                  AND status IN ('confirmed', 'late')
-                RETURNING id
-            `,
-            [feePercent, appointmentId]
-        );
+        let result;
+        if (waxPassId && feePercent > 0) {
+            result = await pool.query(
+                `UPDATE appointments SET status = 'cancelled', cancelled_at = NOW(),
+                     cancellation_fee_percent = $1, no_show_fee_percent = 0,
+                     wax_pass_credit_forfeited = TRUE
+                 WHERE id = $2 AND status IN ('confirmed', 'late') RETURNING id`,
+                [feePercent, appointmentId]
+            );
+            waxPassCreditForfeited = true;
+        } else if (waxPassId && feePercent === 0) {
+            result = await pool.query(
+                `UPDATE appointments SET status = 'cancelled', cancelled_at = NOW(),
+                     cancellation_fee_percent = $1, no_show_fee_percent = 0,
+                     wax_pass_credit_forfeited = FALSE
+                 WHERE id = $2 AND status IN ('confirmed', 'late') RETURNING id`,
+                [feePercent, appointmentId]
+            );
+            if ((result.rows || []).length > 0) {
+                await pool.query(
+                    `UPDATE wax_passes SET used_credits = GREATEST(0, used_credits - 1),
+                         status = CASE WHEN status = 'completed' THEN 'active' ELSE status END
+                     WHERE id = $1`,
+                    [waxPassId]
+                );
+                waxPassCreditRestored = true;
+            }
+        } else {
+            result = await pool.query(
+                `
+                    UPDATE appointments
+                    SET status = 'cancelled',
+                        cancelled_at = NOW(),
+                        cancellation_fee_percent = $1,
+                        no_show_fee_percent = 0
+                    WHERE id = $2
+                      AND status IN ('confirmed', 'late')
+                    RETURNING id
+                `,
+                [feePercent, appointmentId]
+            );
+        }
 
         if (result.rows.length === 0) {
             return res.status(409).json({ error: "Appointment could not be cancelled" });
@@ -2694,11 +3246,251 @@ app.post("/api/admin/appointments/:id/cancel", requireAdmin, requireAdminCsrf, a
             success: true,
             id: result.rows[0].id,
             feePercent,
-            settlement
+            settlement,
+            isWaxPass: waxPassId > 0,
+            waxPassCreditForfeited,
+            waxPassCreditRestored
         });
     } catch (err) {
         console.error("Admin cancel error:", err);
         return sendInternalError(res, "Admin cancel error:", err);
+    }
+});
+
+// ============================================================
+// WAX PASS ROUTES
+// ============================================================
+
+// GET /api/wax-passes/tiers
+app.get("/api/wax-passes/tiers", (req, res) => {
+    res.json(
+        Object.entries(WAX_PASS_TIERS).map(([tier, t]) => ({
+            tier: Number(tier),
+            paid: t.paid,
+            free: t.free,
+            total: t.total,
+            label: t.label,
+            discountPct: t.discountPct
+        }))
+    );
+});
+
+// GET /api/wax-passes/services?tier=N
+app.get("/api/wax-passes/services", (req, res) => {
+    const tier = Number(req.query.tier) || 1;
+    if (![1, 2, 3].includes(tier)) return res.status(400).json({ error: "Invalid tier" });
+    res.json(buildWaxPassCatalog(tier));
+});
+
+// GET /api/client/wax-passes
+app.get("/api/client/wax-passes", requireClient, async (req, res) => {
+    try {
+        const clientId = req.clientAuth.clientId || req.clientAuth.id;
+        const rows = await pool.query(
+            `SELECT id, service_id, service_name, tier, total_credits, paid_credits,
+                    used_credits, price_paid_cents, per_use_price_cents, status, created_at
+             FROM wax_passes WHERE client_id = $1 ORDER BY created_at DESC`,
+            [clientId]
+        );
+        res.json(rows.rows || []);
+    } catch (err) {
+        return sendInternalError(res, "Client wax passes error:", err);
+    }
+});
+
+// POST /api/wax-passes/purchase — create Stripe checkout for wax pass bundle
+app.post("/api/wax-passes/purchase", requireClient, requireCsrf, async (req, res) => {
+    try {
+        const { serviceId, tier, customer } = req.body || {};
+        const tierNum = Number(tier);
+        if (![1, 2, 3].includes(tierNum)) return res.status(400).json({ error: "Invalid tier" });
+        const tierInfo = WAX_PASS_TIERS[tierNum];
+        const allowedIds = getWaxPassServiceIds(tierNum);
+        if (!serviceId || !allowedIds.includes(serviceId)) {
+            return res.status(400).json({ error: "Service not available for this tier" });
+        }
+        const svc = canonicalServicesById.get(serviceId);
+        if (!svc) return res.status(400).json({ error: "Service not found" });
+        const priceCents = Math.round(svc.price * 100);
+        const totalPriceCents = priceCents * tierInfo.paid;
+        const clientId = req.clientAuth.clientId || req.clientAuth.id;
+        const customerEmail = normalizeEmail(customer?.email || req.clientAuth?.email || "");
+
+        const session = await stripe.checkout.sessions.create({
+            payment_method_types: ["card"],
+            mode: "payment",
+            customer_email: customerEmail || undefined,
+            line_items: [{
+                price_data: {
+                    currency: "usd",
+                    product_data: {
+                        name: `Wax Pass — ${svc.name} (${tierInfo.label})`,
+                        description: `${tierInfo.total} credits (${tierInfo.paid} paid + ${tierInfo.free} free). Per-use value: $${svc.price.toFixed(2)}.`
+                    },
+                    unit_amount: totalPriceCents
+                },
+                quantity: 1
+            }],
+            metadata: {
+                type: "wax_pass_purchase",
+                clientId: String(clientId),
+                serviceId,
+                serviceName: svc.name,
+                tier: String(tierNum),
+                totalCredits: String(tierInfo.total),
+                paidCredits: String(tierInfo.paid),
+                pricePaidCents: String(totalPriceCents),
+                perUsePriceCents: String(priceCents)
+            },
+            success_url: `${PUBLIC_APP_URL}/wax-pass-success.html?session_id={CHECKOUT_SESSION_ID}`,
+            cancel_url: `${PUBLIC_APP_URL}/wax-pass.html`
+        });
+
+        res.json({ url: session.url });
+    } catch (err) {
+        return sendInternalError(res, "Wax pass purchase error:", err);
+    }
+});
+
+// POST /api/wax-passes/confirm-purchase — called after Stripe redirect, idempotent
+app.post("/api/wax-passes/confirm-purchase", requireClient, requireCsrf, async (req, res) => {
+    try {
+        const { sessionId } = req.body || {};
+        if (!sessionId) return res.status(400).json({ error: "Session ID required" });
+        const session = await stripe.checkout.sessions.retrieve(sessionId);
+        const clientId = req.clientAuth.clientId || req.clientAuth.id;
+        const waxPass = await finalizeWaxPassPurchaseFromSession(session, clientId);
+        res.json({ success: true, waxPass });
+    } catch (err) {
+        return sendInternalError(res, "Wax pass confirm error:", err);
+    }
+});
+
+// POST /api/client/wax-passes/:passId/book
+app.post("/api/client/wax-passes/:passId/book", requireClient, requireCsrf, async (req, res) => {
+    try {
+        const passId = Number(req.params.passId);
+        if (!Number.isInteger(passId)) return res.status(400).json({ error: "Invalid pass ID" });
+        const clientId = req.clientAuth.clientId || req.clientAuth.id;
+        const { date, time, timezone, phone } = req.body || {};
+        if (!isValidDate(date) || !isValidTime(time)) {
+            return res.status(400).json({ error: "Valid date and time are required" });
+        }
+
+        const bookingResult = await withAppointmentLocks([getAppointmentDateLockKey(date)], async (db) => {
+            const passRows = await db.query(
+                `SELECT wp.*, c.name, c.email
+                 FROM wax_passes wp JOIN clients c ON c.id = wp.client_id
+                 WHERE wp.id = $1 AND wp.client_id = $2 FOR UPDATE`,
+                [passId, clientId]
+            );
+            if (passRows.rows.length === 0) {
+                const e = new Error("Wax pass not found"); e.statusCode = 404; throw e;
+            }
+            const pass = passRows.rows[0];
+            if (pass.status !== "active") {
+                const e = new Error("Wax pass is not active"); e.statusCode = 400; throw e;
+            }
+            const remainingCredits = pass.total_credits - pass.used_credits;
+            if (remainingCredits <= 0) {
+                const e = new Error("No credits remaining on this wax pass"); e.statusCode = 400; throw e;
+            }
+
+            const svc = canonicalServicesById.get(pass.service_id);
+            const duration = svc ? (svc.duration || svc.durationMinutes || 30) : 30;
+            const overlap = await db.query(
+                `SELECT id FROM appointments
+                 WHERE date = $1
+                   AND time < ($2::time + ($3 * interval '1 minute'))
+                   AND (time + (COALESCE(duration_minutes,30) * interval '1 minute')) > $2::time
+                   AND status IN ('confirmed','late') LIMIT 1`,
+                [date, time, duration]
+            );
+            if (overlap.rows.length > 0) {
+                const e = new Error("Time slot already booked"); e.statusCode = 409; throw e;
+            }
+
+            const token = `WAXPASS-USE-${passId}-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+            const appt = await db.query(
+                `INSERT INTO appointments
+                    (name, email, phone, services, date, time, timezone, price,
+                     stripe_payment_id, status, duration_minutes, wax_pass_id)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'confirmed',$10,$11) RETURNING id`,
+                [
+                    pass.name, pass.email, phone || "",
+                    JSON.stringify([
+                        {
+                            id: String(pass.service_id || ""),
+                            name: String(pass.service_name || "Service"),
+                            price: Number(pass.per_use_price_cents || 0) / 100,
+                            duration: Number(duration) || 30
+                        }
+                    ]), date, time,
+                    timezone || "America/Chicago",
+                    (pass.per_use_price_cents || 0) / 100,
+                    token, duration, passId
+                ]
+            );
+
+            const newUsed = pass.used_credits + 1;
+            const newStatus = newUsed >= pass.total_credits ? "completed" : "active";
+            await db.query(
+                "UPDATE wax_passes SET used_credits = $1, status = $2 WHERE id = $3",
+                [newUsed, newStatus, passId]
+            );
+            return {
+                appointmentId: appt.rows[0].id,
+                name: pass.name, email: pass.email,
+                serviceName: pass.service_name, date, time,
+                remainingAfter: remainingCredits - 1
+            };
+        });
+
+        try {
+            await transporter.sendMail({
+                from: process.env.EMAIL_FROM || `"Lunelia Aesthetics" <noreply@luneliaesthetics.com>`,
+                to: bookingResult.email,
+                subject: "Your Wax Pass Appointment is Confirmed!",
+                html: `<p>Hi ${bookingResult.name},</p>
+                       <p>Your wax pass appointment for <strong>${bookingResult.serviceName}</strong> on
+                       <strong>${bookingResult.date}</strong> at <strong>${bookingResult.time}</strong> is confirmed.</p>
+                       <p><strong>Cancellation Policy:</strong> Cancel more than 24 hours before your appointment to have
+                       your wax pass credit returned. If you are late or no-show for an appointment booked with a wax
+                       pass, that wax pass credit is considered spent and is non-refundable.</p>
+                       <p>You have <strong>${bookingResult.remainingAfter}</strong> credit(s) remaining on this pass.</p>
+                       <p>Thank you!</p>`
+            });
+        } catch (mailErr) {
+            console.error("Wax pass booking email error:", mailErr);
+        }
+
+        res.json({
+            success: true,
+            appointmentId: bookingResult.appointmentId,
+            remainingCredits: bookingResult.remainingAfter
+        });
+    } catch (err) {
+        if (err?.statusCode === 404) return res.status(404).json({ error: err.message });
+        if (err?.statusCode === 400) return res.status(400).json({ error: err.message });
+        if (err?.statusCode === 409) return res.status(409).json({ error: err.message });
+        return sendInternalError(res, "Wax pass book error:", err);
+    }
+});
+
+// GET /api/admin/wax-passes
+app.get("/api/admin/wax-passes", requireAdmin, async (req, res) => {
+    try {
+        const rows = await pool.query(
+            `SELECT wp.id, wp.client_id, c.name AS client_name, c.email AS client_email,
+                    wp.service_id, wp.service_name, wp.tier, wp.total_credits, wp.paid_credits,
+                    wp.used_credits, wp.price_paid_cents, wp.per_use_price_cents,
+                    wp.stripe_session_id, wp.stripe_payment_id, wp.status, wp.created_at
+             FROM wax_passes wp LEFT JOIN clients c ON c.id = wp.client_id
+             ORDER BY wp.created_at DESC`
+        );
+        res.json(rows.rows || []);
+    } catch (err) {
+        return sendInternalError(res, "Admin wax passes error:", err);
     }
 });
 

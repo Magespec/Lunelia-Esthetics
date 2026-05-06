@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wax Passes - Lunelia Esthetics</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500&family=Montserrat:wght@300;400;500&display=swap" rel="stylesheet">
+</head>
+<body class="specials-page">
+<a class="skip-link" href="#main-content">Skip to main content</a>
+
+<header>
+    <div class="header-actions" aria-label="Site navigation">
+        <a class="top-home-btn" href="index.html">Home</a>
+        <details class="top-menu">
+            <summary>Menu</summary>
+            <div class="top-menu-list">
+                <a href="about.html">About Us</a>
+                <a href="contact.html">Contact</a>
+                <a href="specials.html">Specials</a>
+                <a href="client.html">Client Portal</a>
+            </div>
+        </details>
+    </div>
+    <h1>Lunelia Esthetics</h1>
+    <h2>Buy a Wax Pass</h2>
+</header>
+
+<main id="main-content" class="content-page">
+    <section class="wax-pass-shell">
+        <h3>Wax Pass Purchase</h3>
+        <p>Select a service from the tier you want, then continue to Stripe checkout.</p>
+
+        <div class="specials-grid" id="wax-pass-tier-grid">
+            <section class="specials-card" data-tier="1">
+                <h3>Tier 1</h3>
+                <p class="specials-subtitle" id="tier-1-subtitle">Buy 5, Get 1 Free</p>
+                <div class="field-group">
+                    <label for="wax-pass-service-tier-1">Service</label>
+                    <select id="wax-pass-service-tier-1"></select>
+                </div>
+                <p id="wax-pass-summary-tier-1" class="specials-note"></p>
+                <button class="wax-pass-add-btn" data-tier="1" type="button">Add to Cart</button>
+            </section>
+
+            <section class="specials-card" data-tier="2">
+                <h3>Tier 2</h3>
+                <p class="specials-subtitle" id="tier-2-subtitle">Buy 7, Get 2 Free</p>
+                <div class="field-group">
+                    <label for="wax-pass-service-tier-2">Service</label>
+                    <select id="wax-pass-service-tier-2"></select>
+                </div>
+                <p id="wax-pass-summary-tier-2" class="specials-note"></p>
+                <button class="wax-pass-add-btn" data-tier="2" type="button">Add to Cart</button>
+            </section>
+
+            <section class="specials-card" data-tier="3">
+                <h3>Tier 3</h3>
+                <p class="specials-subtitle" id="tier-3-subtitle">Buy 9, Get 3 Free</p>
+                <div class="field-group">
+                    <label for="wax-pass-service-tier-3">Service</label>
+                    <select id="wax-pass-service-tier-3"></select>
+                </div>
+                <p id="wax-pass-summary-tier-3" class="specials-note"></p>
+                <button class="wax-pass-add-btn" data-tier="3" type="button">Add to Cart</button>
+            </section>
+        </div>
+
+        <p id="wax-pass-message" class="form-message" role="status" aria-live="polite"></p>
+
+        <section class="cart" id="wax-pass-cart">
+            <h3>Your Wax Pass Cart</h3>
+            <ul id="cart-items" aria-live="polite"></ul>
+            <p>Total: $<span id="total">0</span></p>
+            <p id="cart-message" class="form-message" role="status" aria-live="polite"></p>
+            <button id="checkout-btn" type="button">Checkout</button>
+        </section>
+    </section>
+</main>
+
+<script src="wax-pass.js"></script>
+<script src="auth-menu.js"></script>
+</body>
+</html>

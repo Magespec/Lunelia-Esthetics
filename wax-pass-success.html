@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Booking Confirmed - Lunelia Esthetics</title>
+    <title>Wax Pass Purchase Confirmed - Lunelia Esthetics</title>
     <link rel="stylesheet" href="styles.css">
     <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500&family=Montserrat:wght@300;400;500&display=swap" rel="stylesheet">
 </head>
@@ -24,49 +24,36 @@
         </details>
     </div>
     <h1>Lunelia Esthetics</h1>
-    <h2>Booking Confirmation</h2>
+    <h2>Wax Pass Purchase</h2>
 </header>
 
 <main class="booking-container" id="main-content">
     <section class="success-message">
         <div id="loading">
-            <h3>Processing your booking...</h3>
-            <p>Please wait while we confirm your appointment.</p>
+            <h3>Confirming your wax pass...</h3>
+            <p>Please wait while we verify your purchase.</p>
         </div>
-        
+
         <div id="success" style="display:none;">
-            <h3>✓ Your Appointment is Confirmed!</h3>
-            <p>Thank you for booking with Lunelia Esthetics.</p>
-            <p>A confirmation email has been sent to your email address with all the details of your appointment.</p>
-            
+            <h3>✓ Wax Pass Activated!</h3>
+            <p>Your wax pass has been added to your account.</p>
             <div class="appointment-details">
-                <p><strong>Appointment Details:</strong></p>
-                <p>Name: <span id="appointment-name">-</span></p>
-                <p>Date: <span id="appointment-date">-</span></p>
-                <p>Time: <span id="appointment-time">-</span></p>
-                <p>Services: <span id="appointment-services">-</span></p>
-
-                <p><strong>Next Steps:</strong></p>
-                <ul>
-                    <li>Check your email for the confirmation</li>
-                    <li>You'll receive a reminder 24 hours before your appointment</li>
-                    <li>Arrive 5-10 minutes early</li>
-                </ul>
+                <p><strong>Service:</strong> <span id="wax-pass-service">-</span></p>
+                <p><strong>Tier:</strong> <span id="wax-pass-tier">-</span></p>
+                <p><strong>Credits:</strong> <span id="wax-pass-credits">-</span></p>
             </div>
-
-            <a href="index.html" class="btn-home">Back to Home</a>
+            <a href="client.html" class="btn-home">Go to Client Portal</a>
         </div>
-        
+
         <div id="error" style="display:none;">
-            <h3>✗ Something went wrong</h3>
+            <h3>✗ Unable to confirm wax pass</h3>
             <p id="error-message"></p>
-            <a href="index.html" class="btn-home">Back to Home</a>
+            <a href="wax-pass.html" class="btn-home">Try Again</a>
         </div>
     </section>
 </main>
 
-<script src="success.js"></script>
+<script src="wax-pass-success.js"></script>
 <script src="auth-menu.js"></script>
-
 </body>
 </html>

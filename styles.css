@@ -282,11 +282,130 @@ body:not(.home-page):not(.booking-page) ul {
     border-bottom: none;
 }
 
+.specials-page .content-page .wax-pass-shell {
+    background: transparent;
+    border: none;
+    padding: 0;
+}
+
+#wax-pass-cart {
+    text-align: left;
+}
+
+#wax-pass-cart h3 {
+    text-align: center;
+}
+
+#wax-pass-cart p,
+#wax-pass-cart li,
+#wax-pass-cart span,
+#wax-pass-cart button {
+    text-align: left;
+}
+
+#wax-pass-cart p {
+    text-align: left;
+}
+
+#cart-items,
+#wax-pass-checkout-items {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 10px 0;
+}
+
+#cart-items li,
+#wax-pass-checkout-items li {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid #e8f0ea;
+    line-height: 1.6;
+}
+
+#cart-items li span,
+#wax-pass-checkout-items li span {
+    flex: 1;
+}
+
+#wax-pass-tier-grid {
+    align-items: stretch;
+}
+
+#wax-pass-tier-grid .specials-card {
+    flex: 1 1 420px;
+    max-width: 560px;
+    min-height: 380px;
+    padding: 30px 34px;
+    display: grid;
+    grid-template-rows: auto auto auto 1fr auto;
+    row-gap: 10px;
+}
+
+#wax-pass-tier-grid .specials-card h3 {
+    font-size: 1.35rem;
+}
+
+#wax-pass-tier-grid .specials-subtitle {
+    font-size: 0.95rem;
+}
+
+#wax-pass-tier-grid .specials-note {
+    font-size: 0.95rem;
+}
+
+#wax-pass-tier-grid .field-group label {
+    display: block;
+    margin-bottom: 8px;
+    font-size: 1rem;
+}
+
+#wax-pass-tier-grid .field-group {
+    margin-bottom: 0;
+}
+
+#wax-pass-tier-grid .field-group select {
+    display: block;
+    width: 100%;
+    min-height: 42px;
+    font-size: 1rem;
+    box-sizing: border-box;
+    padding: 10px 12px;
+    border: 1px solid #d3e3d8;
+    border-radius: 10px;
+    background: #f7fcf8;
+    color: #355243;
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+}
+
+#wax-pass-tier-grid .wax-pass-add-btn {
+    width: 100%;
+    min-height: 44px;
+    font-size: 1rem;
+}
+
 .specials-page .specials-note {
     font-size: 0.78rem;
     color: #a0918a;
     margin: auto 0 0;
     font-style: italic;
+}
+
+@media (min-width: 1024px) {
+    #wax-pass-tier-grid {
+        flex-wrap: nowrap;
+        align-items: stretch;
+    }
+
+    #wax-pass-tier-grid .specials-card {
+        flex: 1 1 0;
+        max-width: none;
+        min-height: 400px;
+    }
 }
 
 /* Applied specials box on booking/checkout page */
@@ -888,11 +1007,12 @@ input:focus-visible {
 .booking-page .client-info h3,
 .booking-page .calendar-booking h3 {
     text-align: left;
+    display: inline-block;
     margin-bottom: 10px;
 }
 
 .booking-page section h3::after {
-    margin: 10px 0 0;
+    margin: 10px auto 0;
     width: 48px;
 }
 
@@ -946,6 +1066,33 @@ input:focus-visible {
     padding: 9px 10px;
     border-radius: 8px;
     font-size: 14px;
+}
+
+.wax-pass-checkout-page .wax-pass-checkout-layout {
+    grid-template-columns: minmax(360px, 1.2fr) minmax(280px, 0.95fr);
+}
+
+.wax-pass-checkout-page .client-info h3,
+.wax-pass-checkout-page .calendar-booking h3 {
+    text-align: left;
+    display: inline-block;
+}
+
+.wax-pass-checkout-page section h3::after {
+    margin: 10px auto 0;
+}
+
+.wax-pass-checkout-page #wax-pass-checkout-items li,
+.wax-pass-checkout-page .cart-inline li {
+    display: block;
+    text-align: left;
+    justify-content: flex-start;
+    align-items: flex-start;
+}
+
+.wax-pass-checkout-page .cart-inline p {
+    margin-left: 0;
+    text-align: left;
 }
 
 .booking-page .booking-details-card {
@@ -1052,8 +1199,13 @@ table {
     padding: 30px;
 }
 
+.client-page #client-dashboard .client-wax-pass-panel {
+    background: #ffffff;
+}
+
 .client-page #client-appointments-table,
-.client-page #client-past-appointments-table {
+.client-page #client-past-appointments-table,
+.client-page #client-wax-passes-table {
     min-width: 0;
     width: 100%;
     table-layout: auto;
@@ -1062,7 +1214,9 @@ table {
 .client-page #client-appointments-table th,
 .client-page #client-appointments-table td,
 .client-page #client-past-appointments-table th,
-.client-page #client-past-appointments-table td {
+.client-page #client-past-appointments-table td,
+.client-page #client-wax-passes-table th,
+.client-page #client-wax-passes-table td {
     font-size: 15px;
     padding: 12px 10px;
 }
@@ -1080,7 +1234,15 @@ table {
 .client-page #client-past-appointments-table th:nth-child(2),
 .client-page #client-past-appointments-table td:nth-child(2),
 .client-page #client-past-appointments-table th:nth-child(4),
-.client-page #client-past-appointments-table td:nth-child(4) {
+.client-page #client-past-appointments-table td:nth-child(4),
+.client-page #client-wax-passes-table th:nth-child(1),
+.client-page #client-wax-passes-table td:nth-child(1),
+.client-page #client-wax-passes-table th:nth-child(2),
+.client-page #client-wax-passes-table td:nth-child(2),
+.client-page #client-wax-passes-table th:nth-child(4),
+.client-page #client-wax-passes-table td:nth-child(4),
+.client-page #client-wax-passes-table th:nth-child(5),
+.client-page #client-wax-passes-table td:nth-child(5) {
     white-space: nowrap;
 }
 
@@ -1282,6 +1444,13 @@ table {
 
 #client-logout {
     margin-top: 14px;
+}
+
+#toggle-client-past-appointments,
+#client-logout {
+    display: block;
+    margin-left: auto;
+    margin-right: auto;
 }
 
 .client-reschedule-panel {
@@ -1912,7 +2081,8 @@ footer {
     }
 
     .client-page #client-appointments-table,
-    .client-page #client-past-appointments-table {
+    .client-page #client-past-appointments-table,
+    .client-page #client-wax-passes-table {
         min-width: 0;
         font-size: 13px;
     }
@@ -1924,7 +2094,9 @@ footer {
     .client-page #client-appointments-table th,
     .client-page #client-appointments-table td,
     .client-page #client-past-appointments-table th,
-    .client-page #client-past-appointments-table td {
+    .client-page #client-past-appointments-table td,
+    .client-page #client-wax-passes-table th,
+    .client-page #client-wax-passes-table td {
         font-size: 13px;
         padding: 9px 8px;
     }
@@ -1939,7 +2111,8 @@ footer {
     }
 
     .client-page #client-appointments-table thead,
-    .client-page #client-past-appointments-table thead {
+    .client-page #client-past-appointments-table thead,
+    .client-page #client-wax-passes-table thead {
         display: none;
     }
 
@@ -1950,7 +2123,11 @@ footer {
     .client-page #client-past-appointments-table,
     .client-page #client-past-appointments-table tbody,
     .client-page #client-past-appointments-table tr,
-    .client-page #client-past-appointments-table td {
+    .client-page #client-past-appointments-table td,
+    .client-page #client-wax-passes-table,
+    .client-page #client-wax-passes-table tbody,
+    .client-page #client-wax-passes-table tr,
+    .client-page #client-wax-passes-table td {
         display: block;
         width: 100%;
     }

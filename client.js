@@ -2,9 +2,12 @@ const authSection = document.getElementById("client-auth-section");
 const dashboard = document.getElementById("client-dashboard");
 const authMessage = document.getElementById("client-auth-message");
 const dashboardMessage = document.getElementById("client-dashboard-message");
+const sessionSummary = document.getElementById("client-session-summary");
 const loginForm = document.getElementById("client-login-form");
 const appointmentsBody = document.querySelector("#client-appointments-table tbody");
 const pastAppointmentsBody = document.querySelector("#client-past-appointments-table tbody");
+const waxPassesBody = document.querySelector("#client-wax-passes-table tbody");
+const pastAppointmentsToggleBtn = document.getElementById("toggle-client-past-appointments");
 const logoutButton = document.getElementById("client-logout");
 const reschedulePanel = document.getElementById("client-reschedule-panel");
 const rescheduleDateInput = document.getElementById("client-reschedule-date");
@@ -27,22 +30,43 @@ function formatStatus(status) {
 }
 
 const API_BASES = (() => {
-    const bases = [""];
+    const bases = [];
     const isLocal = ["localhost", "127.0.0.1"].includes(window.location.hostname);
 
     if (isLocal) {
-        if (window.location.port !== "3001") {
-            bases.push("http://localhost:3001");
-        }
-        if (window.location.port !== "3000") {
-            bases.push("http://localhost:3000");
-        }
+        bases.push("http://localhost:3001");
+        bases.push("http://localhost:3000");
     }
+
+    bases.push("");
 
     return Array.from(new Set(bases));
 })();
 
 let activeReschedule = null;
+let pastAppointmentsExpanded = false;
+const PAST_APPOINTMENTS_VISIBLE_ROWS = 3;
+const WAX_PASS_SELECTION_KEY = "pendingWaxPassSelection";
+const CLIENT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+
+let clientIdleLogoutTimer = null;
+let clientActivityTrackingBound = false;
+
+function getWaxPassTierLabel(tier) {
+    const map = {
+        1: "Tier 1 (Buy 5, Get 1)",
+        2: "Tier 2 (Buy 7, Get 2)",
+        3: "Tier 3 (Buy 9, Get 3)"
+    };
+    return map[Number(tier)] || `Tier ${tier}`;
+}
+
+function getWaxPassStatusLabel(status) {
+    const normalized = String(status || "").toLowerCase();
+    if (normalized === "active") return "Active";
+    if (normalized === "completed") return "Completed";
+    return status ? status.charAt(0).toUpperCase() + status.slice(1) : "-";
+}
 
 function getCookie(name) {
     const cookies = document.cookie ? document.cookie.split(";") : [];
@@ -71,6 +95,66 @@ function setMessage(message, inDashboard = false) {
     }
 }
 
+function stopClientIdleLogoutTimer() {
+    if (clientIdleLogoutTimer) {
+        window.clearTimeout(clientIdleLogoutTimer);
+        clientIdleLogoutTimer = null;
+    }
+}
+
+async function handleClientIdleTimeout() {
+    if (!dashboard || dashboard.hidden) {
+        return;
+    }
+
+    try {
+        await fetchClientJson("/api/client/logout", {
+            method: "POST"
+        });
+    } catch (error) {
+    }
+
+    closeReschedulePanel();
+    pastAppointmentsExpanded = false;
+    showDashboard(false);
+    window.dispatchEvent(new CustomEvent("client-auth-state-changed", {
+        detail: { signedIn: false }
+    }));
+    setMessage("Signed out due to inactivity.", false);
+}
+
+function resetClientIdleLogoutTimer() {
+    if (!dashboard || dashboard.hidden) {
+        return;
+    }
+
+    stopClientIdleLogoutTimer();
+    clientIdleLogoutTimer = window.setTimeout(() => {
+        handleClientIdleTimeout();
+    }, CLIENT_IDLE_TIMEOUT_MS);
+}
+
+function bindClientActivityTracking() {
+    if (clientActivityTrackingBound) {
+        return;
+    }
+
+    clientActivityTrackingBound = true;
+    const activityEvents = ["click", "keydown", "mousemove", "touchstart", "scroll"];
+
+    activityEvents.forEach((eventName) => {
+        window.addEventListener(
+            eventName,
+            () => {
+                if (dashboard && !dashboard.hidden) {
+                    resetClientIdleLogoutTimer();
+                }
+            },
+            { passive: true }
+        );
+    });
+}
+
 function showDashboard(show) {
     if (authSection) {
         authSection.hidden = show;
@@ -81,15 +165,93 @@ function showDashboard(show) {
     if (!show && dashboardMessage) {
         dashboardMessage.textContent = "";
     }
+    if (!show && sessionSummary) {
+        sessionSummary.textContent = "";
+    }
+
+    if (show) {
+        resetClientIdleLogoutTimer();
+    } else {
+        stopClientIdleLogoutTimer();
+    }
+}
+
+function setClientSessionSummary(client) {
+    if (!sessionSummary) {
+        return;
+    }
+
+    const email = String(client?.email || "").trim();
+    sessionSummary.textContent = email ? `Signed in as ${email}` : "";
 }
 
 function parseServices(servicesRaw) {
     try {
         const parsed = JSON.parse(servicesRaw || "[]");
-        return Array.isArray(parsed) ? parsed.map((service) => service.name).join(", ") : "-";
+        if (!Array.isArray(parsed)) {
+            return "-";
+        }
+
+        const labels = parsed
+            .map((service) => {
+                if (typeof service === "string") {
+                    return formatServiceId(service);
+                }
+
+                if (service && typeof service === "object") {
+                    if (service.name) {
+                        return String(service.name);
+                    }
+                    if (service.id) {
+                        return formatServiceId(service.id);
+                    }
+                }
+
+                return "";
+            })
+            .map((label) => String(label || "").trim())
+            .filter(Boolean);
+
+        return labels.join(", ") || "-";
     } catch (error) {
         return "-";
     }
+}
+
+function formatServiceId(serviceId) {
+    const id = String(serviceId || "").trim();
+    if (!id) {
+        return "";
+    }
+
+    const catalogServices = window?.luneliaServiceCatalog?.getAllServices?.();
+    if (Array.isArray(catalogServices)) {
+        const exact = catalogServices.find((service) => String(service?.id || "") === id);
+        if (exact?.name) {
+            return String(exact.name);
+        }
+    }
+
+    const specials = {
+        brazilian: "Brazilian",
+        dermaplaning: "Dermaplaning",
+        underarms: "Underarms"
+    };
+
+    if (specials[id]) {
+        return specials[id];
+    }
+
+    return id
+        .split("-")
+        .filter(Boolean)
+        .map((word) => {
+            if (word.length === 1) {
+                return `(${word.toUpperCase()})`;
+            }
+            return word.charAt(0).toUpperCase() + word.slice(1);
+        })
+        .join(" ");
 }
 
 function toMinutes(timeText) {
@@ -372,6 +534,10 @@ async function loadAppointments() {
         pastAppointmentsBody.innerHTML = "";
     }
 
+    if (pastAppointmentsToggleBtn) {
+        pastAppointmentsToggleBtn.hidden = true;
+    }
+
     if (!appointments || appointments.length === 0) {
         const row = document.createElement("tr");
         row.innerHTML = '<td colspan="5">No appointments found for this account.</td>';
@@ -429,7 +595,17 @@ async function loadAppointments() {
                         ? ` A ${result.feePercent}% fee applies based on cancellation policy.`
                         : "";
 
-                    setMessage(`Appointment cancelled.${feeText}`, true);
+                    if (result?.isWaxPass) {
+                        if (result?.waxPassCreditForfeited) {
+                            setMessage("Appointment cancelled. Wax pass credit forfeited due to late cancellation.", true);
+                        } else if (result?.waxPassCreditRestored) {
+                            setMessage("Appointment cancelled. Wax pass credit restored.", true);
+                        } else {
+                            setMessage("Appointment cancelled.", true);
+                        }
+                    } else {
+                        setMessage(`Appointment cancelled.${feeText}`, true);
+                    }
                     await loadAppointments();
                 } catch (error) {
                     setMessage(error.message, true);
@@ -452,10 +628,15 @@ async function loadAppointments() {
         const row = document.createElement("tr");
         row.innerHTML = '<td colspan="4">No past appointments found.</td>';
         pastAppointmentsBody.appendChild(row);
+        await loadWaxPasses();
         return;
     }
 
-    pastAppointments.forEach((appointment) => {
+    const visiblePastAppointments = pastAppointmentsExpanded
+        ? pastAppointments
+        : pastAppointments.slice(0, PAST_APPOINTMENTS_VISIBLE_ROWS);
+
+    visiblePastAppointments.forEach((appointment) => {
         const row = document.createElement("tr");
         row.innerHTML = `
             <td data-label="Date">${appointment.date || "-"}</td>
@@ -464,6 +645,88 @@ async function loadAppointments() {
             <td data-label="Status">${formatStatus(appointment.status)}</td>
         `;
         pastAppointmentsBody.appendChild(row);
+    });
+
+    if (pastAppointmentsToggleBtn) {
+        pastAppointmentsToggleBtn.hidden = pastAppointments.length <= PAST_APPOINTMENTS_VISIBLE_ROWS;
+        pastAppointmentsToggleBtn.textContent = pastAppointmentsExpanded
+            ? "Show fewer past appointments"
+            : "Show all past appointments";
+    }
+
+    await loadWaxPasses();
+}
+
+async function loadWaxPasses() {
+    if (!waxPassesBody) {
+        return;
+    }
+
+    const waxPasses = await fetchClientJson("/api/client/wax-passes");
+    waxPassesBody.innerHTML = "";
+
+    if (!Array.isArray(waxPasses) || waxPasses.length === 0) {
+        const row = document.createElement("tr");
+        row.innerHTML = '<td colspan="5">No wax passes found.</td>';
+        waxPassesBody.appendChild(row);
+        return;
+    }
+
+    waxPasses.forEach((waxPass) => {
+        const usedCredits = Number(waxPass.used_credits) || 0;
+        const totalCredits = Number(waxPass.total_credits) || 0;
+        const remainingCredits = Math.max(0, totalCredits - usedCredits);
+        const isBookable = String(waxPass.status || "").toLowerCase() === "active" && remainingCredits > 0;
+
+        const row = document.createElement("tr");
+        row.innerHTML = `
+            <td data-label="Service">${waxPass.service_name || "-"}</td>
+            <td data-label="Tier">${getWaxPassTierLabel(waxPass.tier)}</td>
+            <td data-label="Credits">${usedCredits}/${totalCredits}</td>
+            <td data-label="Status">${getWaxPassStatusLabel(waxPass.status)}</td>
+            <td data-label="Action"></td>
+        `;
+
+        const actionCell = row.querySelector("td:last-child");
+        const bookButton = document.createElement("button");
+        bookButton.type = "button";
+        bookButton.textContent = "Book";
+        bookButton.disabled = !isBookable;
+        if (!isBookable) {
+            bookButton.classList.add("locked-submit");
+        }
+
+        bookButton.addEventListener("click", () => {
+            const catalogServices = window?.luneliaServiceCatalog?.getAllServices?.();
+            const catalogService = Array.isArray(catalogServices)
+                ? catalogServices.find((service) => String(service?.id || "") === String(waxPass.service_id || ""))
+                : null;
+            const serviceDuration = Number(catalogService?.duration);
+
+            const selection = {
+                passId: Number(waxPass.id),
+                serviceId: String(waxPass.service_id || ""),
+                serviceName: String(waxPass.service_name || "Service"),
+                servicePrice: Number(waxPass.per_use_price_cents || 0) / 100,
+                serviceDuration: Number.isInteger(serviceDuration) && serviceDuration > 0 ? serviceDuration : 30
+            };
+
+            localStorage.setItem(WAX_PASS_SELECTION_KEY, JSON.stringify(selection));
+            localStorage.setItem("cart", JSON.stringify([
+                {
+                    id: selection.serviceId,
+                    name: selection.serviceName,
+                    price: selection.servicePrice,
+                    duration: selection.serviceDuration
+                }
+            ]));
+            localStorage.setItem("total", String(Math.round(selection.servicePrice)));
+
+            window.location.href = "booking.html";
+        });
+
+        actionCell.appendChild(bookButton);
+        waxPassesBody.appendChild(row);
     });
 }
 
@@ -486,6 +749,7 @@ loginForm?.addEventListener("submit", async (event) => {
         }
 
         showDashboard(true);
+        setClientSessionSummary(data?.client || { email });
         window.dispatchEvent(new CustomEvent("client-auth-state-changed", {
             detail: { signedIn: true }
         }));
@@ -507,11 +771,22 @@ logoutButton?.addEventListener("click", async () => {
     }
 
     closeReschedulePanel();
+    pastAppointmentsExpanded = false;
     showDashboard(false);
     window.dispatchEvent(new CustomEvent("client-auth-state-changed", {
         detail: { signedIn: false }
     }));
     setMessage("Signed out.", false);
+});
+
+pastAppointmentsToggleBtn?.addEventListener("click", async () => {
+    pastAppointmentsExpanded = !pastAppointmentsExpanded;
+
+    try {
+        await loadAppointments();
+    } catch (error) {
+        setMessage(error.message, true);
+    }
 });
 
 rescheduleDateInput?.addEventListener("change", () => {
@@ -557,9 +832,12 @@ rescheduleSaveButton?.addEventListener("click", async () => {
 });
 
 (async function init() {
+    bindClientActivityTracking();
+
     try {
-        await fetchClientJson("/api/client/session");
+        const session = await fetchClientJson("/api/client/session");
         showDashboard(true);
+        setClientSessionSummary(session?.client || null);
         await loadAppointments();
         return;
     } catch (error) {

@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wax Pass Checkout - Lunelia Esthetics</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500&family=Montserrat:wght@300;400;500&display=swap" rel="stylesheet">
+</head>
+<body class="booking-page wax-pass-checkout-page">
+<a class="skip-link" href="#main-content">Skip to main content</a>
+
+<header>
+    <div class="header-actions" aria-label="Site navigation">
+        <a class="top-home-btn" href="index.html">Home</a>
+        <details class="top-menu">
+            <summary>Menu</summary>
+            <div class="top-menu-list">
+                <a href="about.html">About Us</a>
+                <a href="contact.html">Contact</a>
+                <a href="specials.html">Specials</a>
+                <a href="client.html">Client Portal</a>
+            </div>
+        </details>
+    </div>
+    <h1>Lunelia Esthetics</h1>
+    <h2>Wax Pass Checkout</h2>
+</header>
+
+<main class="booking-container wax-pass-checkout-layout" id="main-content">
+    <section class="client-info">
+        <h3>Contact Details</h3>
+        <p class="section-subtitle">Enter your contact info so we can confirm your wax pass purchase.</p>
+        <form id="wax-pass-booking-form" novalidate>
+            <div class="field-group">
+                <label for="wax-pass-client-name">Full Name</label>
+                <input type="text" id="wax-pass-client-name" required>
+            </div>
+
+            <div class="field-group">
+                <label for="wax-pass-client-email">Email Address</label>
+                <input type="email" id="wax-pass-client-email" required>
+            </div>
+
+            <div class="field-group">
+                <label for="wax-pass-client-phone">Phone Number</label>
+                <input type="tel" id="wax-pass-client-phone" required>
+            </div>
+
+            <div class="booking-policy-note" aria-label="Booking policy">
+                <p><strong>Wax Pass Policy:</strong></p>
+                <ul>
+                    <li>Wax Pass credits are non-refundable.</li>
+                    <li>If you are late or no-show for an appointment booked with a wax pass, that wax pass credit is considered spent and is non-refundable.</li>
+                    <li>Cancellations made with more than 24 hours' notice will have their credit returned to your pass.</li>
+                    <li>If you are more than 10 minutes late, your appointment may be forfeited and rescheduled.</li>
+                </ul>
+            </div>
+
+            <p id="wax-pass-booking-message" class="form-message" role="status" aria-live="polite"></p>
+        </form>
+    </section>
+
+    <section class="calendar-booking">
+        <h3>Your Cart</h3>
+        <p class="section-subtitle">Review your selected wax pass before continuing to payment.</p>
+        <div class="cart-inline">
+            <ul id="wax-pass-checkout-items"></ul>
+            <p><strong>Total: $<span id="wax-pass-checkout-total">0.00</span></strong></p>
+        </div>
+        <button id="wax-pass-booking-continue" type="button">Continue to Checkout</button>
+    </section>
+</main>
+
+<script src="wax-pass-booking.js"></script>
+<script src="auth-menu.js"></script>
+</body>
+</html>

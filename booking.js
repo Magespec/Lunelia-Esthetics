@@ -14,12 +14,81 @@ const phoneInput = document.getElementById("client-phone");
 const referralEmailInput = document.getElementById("referral-email");
 const formMessage = document.getElementById("form-message");
 const PENDING_BOOKING_KEY = "pendingBookingDraft";
+const WAX_PASS_SELECTION_KEY = "pendingWaxPassSelection";
 
 let selectedDate = null;
 let selectedTime = null;
 let cart = [];
 let total = 0;
 let appliedSpecials = null; // result from /api/booking/preview-specials
+
+function getPendingWaxPassSelection() {
+    try {
+        const raw = localStorage.getItem(WAX_PASS_SELECTION_KEY);
+        const parsed = raw ? JSON.parse(raw) : null;
+        const passId = Number(parsed?.passId || 0);
+        const serviceId = String(parsed?.serviceId || "").trim();
+        if (!passId || !serviceId) {
+            return null;
+        }
+        return {
+            passId,
+            serviceId,
+            serviceName: String(parsed?.serviceName || "").trim(),
+            serviceDuration: Number(parsed?.serviceDuration) || null
+        };
+    } catch (error) {
+        return null;
+    }
+}
+
+function getCatalogServiceDuration(serviceId) {
+    const id = String(serviceId || "").trim();
+    if (!id) {
+        return null;
+    }
+
+    const catalogServices = window?.luneliaServiceCatalog?.getAllServices?.();
+    if (!Array.isArray(catalogServices)) {
+        return null;
+    }
+
+    const match = catalogServices.find((service) => String(service?.id || "") === id);
+    const duration = Number(match?.duration);
+    return Number.isInteger(duration) && duration > 0 ? duration : null;
+}
+
+async function prefillEmailFromSession() {
+    if (!emailInput) {
+        return;
+    }
+
+    try {
+        const response = await fetch("/api/client/session", {
+            method: "GET",
+            credentials: "include"
+        });
+
+        const data = await response.json().catch(() => null);
+        const sessionEmail = String(data?.client?.email || "").trim();
+
+        if (!response.ok || !sessionEmail) {
+            emailInput.readOnly = false;
+            emailInput.removeAttribute("aria-readonly");
+            return;
+        }
+
+        emailInput.value = sessionEmail;
+        emailInput.readOnly = true;
+        emailInput.setAttribute("aria-readonly", "true");
+        await fetchAndApplySpecials();
+        updatePayButtonState();
+    } catch (error) {
+        emailInput.readOnly = false;
+        emailInput.removeAttribute("aria-readonly");
+        // Ignore session prefill failures silently.
+    }
+}
 
 function persistCartState() {
     if (cart.length === 0) {
@@ -137,9 +206,10 @@ function renderCheckoutCart() {
 
     // Update pay button label for free bookings
     if (payBtn) {
-        payBtn.textContent = appliedSpecials?.isFree
-            ? "Confirm Free Booking"
-            : "Pay & Confirm Booking";
+        const waxPassSelection = getPendingWaxPassSelection();
+        payBtn.textContent = waxPassSelection
+            ? "Confirm Wax Pass Booking"
+            : (appliedSpecials?.isFree ? "Confirm Free Booking" : "Pay & Confirm Booking");
     }
 }
 
@@ -252,6 +322,22 @@ function loadCart() {
         } catch (e) {
             cart = [];
         }
+    }
+
+    const waxPassSelection = getPendingWaxPassSelection();
+    if (waxPassSelection && cart.length > 0) {
+        const selectionDuration = Number(waxPassSelection.serviceDuration);
+        const catalogDuration = getCatalogServiceDuration(waxPassSelection.serviceId);
+        const resolvedDuration = Number.isInteger(selectionDuration) && selectionDuration > 0
+            ? selectionDuration
+            : (catalogDuration || 30);
+
+        cart = cart.map((item) => ({
+            ...item,
+            duration: resolvedDuration
+        }));
+
+        persistCartState();
     }
 
     renderCheckoutCart();
@@ -464,6 +550,8 @@ payBtn.addEventListener("click", async () => {
             await fetchAndApplySpecials();
         }
 
+        const waxPassSelection = getPendingWaxPassSelection();
+
         localStorage.setItem(
             PENDING_BOOKING_KEY,
             JSON.stringify({
@@ -472,6 +560,8 @@ payBtn.addEventListener("click", async () => {
                 time: selectedTime,
                 services: cart,
                 isFree: appliedSpecials?.isFree || false,
+                isWaxPassBooking: Boolean(waxPassSelection),
+            waxPassSelection,
                 appliedSpecials: appliedSpecials || null,
                 customer: {
                     name: nameInput.value.trim(),
@@ -498,3 +588,4 @@ payBtn.addEventListener("click", async () => {
 // Initialize
 loadCart();
 updatePayButtonState();
+prefillEmailFromSession();

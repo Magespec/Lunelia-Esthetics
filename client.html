@@ -19,7 +19,7 @@
                 <a href="about.html">About Us</a>
                 <a href="contact.html">Contact</a>
                 <a href="specials.html">Specials</a>
-                <a href="client.html">Sign In</a>
+                <a href="client-login.html">Sign In</a>
             </div>
         </details>
     </div>
@@ -53,6 +53,8 @@
     <div id="client-dashboard" class="admin-dashboard" hidden>
         <section class="calendar-booking">
             <h3>Your Appointments</h3>
+            <p id="client-session-summary" class="section-subtitle"></p>
+            <button id="client-logout" type="button">Sign Out</button>
             <p id="client-dashboard-message" class="form-message admin-dashboard-message" role="status" aria-live="polite"></p>
             <div class="table-wrapper admin-table-wrapper">
                 <table id="client-appointments-table" class="admin-table">
@@ -63,21 +65,6 @@
                             <th scope="col">Services</th>
                             <th scope="col">Status</th>
                             <th scope="col">Action</th>
-                        </tr>
-                    </thead>
-                    <tbody></tbody>
-                </table>
-            </div>
-
-            <h4 class="client-past-title">Your Past Appointments</h4>
-            <div class="table-wrapper admin-table-wrapper">
-                <table id="client-past-appointments-table" class="admin-table">
-                    <thead>
-                        <tr>
-                            <th scope="col">Date</th>
-                            <th scope="col">Time</th>
-                            <th scope="col">Services</th>
-                            <th scope="col">Status</th>
                         </tr>
                     </thead>
                     <tbody></tbody>
@@ -103,12 +90,49 @@
                     <button id="client-reschedule-cancel" type="button">Cancel</button>
                 </div>
             </div>
+        </section>
 
-            <button id="client-logout" type="button">Sign Out</button>
+        <section class="calendar-booking client-wax-pass-panel">
+            <h3>Your Wax Passes</h3>
+            <div class="table-wrapper admin-table-wrapper">
+                <table id="client-wax-passes-table" class="admin-table">
+                    <thead>
+                        <tr>
+                            <th scope="col">Service</th>
+                            <th scope="col">Tier</th>
+                            <th scope="col">Credits</th>
+                            <th scope="col">Status</th>
+                            <th scope="col">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="calendar-booking">
+            <h3>Your Past Appointments</h3>
+            <div class="table-wrapper admin-table-wrapper">
+                <table id="client-past-appointments-table" class="admin-table">
+                    <thead>
+                        <tr>
+                            <th scope="col">Date</th>
+                            <th scope="col">Time</th>
+                            <th scope="col">Services</th>
+                            <th scope="col">Status</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+            <button type="button" id="toggle-client-past-appointments" class="analytics-toggle" hidden>
+                Show all past appointments
+            </button>
         </section>
     </div>
 </main>
 
+<script src="serviceData.js"></script>
 <script src="client.js"></script>
 <script src="auth-menu.js"></script>
 </body>

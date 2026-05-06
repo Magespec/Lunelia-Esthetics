@@ -3,11 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Create Account - Lunelia Esthetics</title>
+    <title>Admin Sign In - Lunelia Esthetics</title>
     <link rel="stylesheet" href="styles.css">
     <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500&family=Montserrat:wght@300;400;500&display=swap" rel="stylesheet">
 </head>
-<body>
+<body class="admin-page">
 <a class="skip-link" href="#main-content">Skip to main content</a>
 
 <header>
@@ -24,37 +24,28 @@
         </details>
     </div>
     <h1>Lunelia Esthetics</h1>
-    <h2>Create Account</h2>
+    <h2>Admin Sign In</h2>
 </header>
 
 <main id="main-content" class="booking-container admin-layout">
-    <section class="client-info admin-login-section">
-        <h3>Create Your Client Account</h3>
-        <form id="create-account-form" novalidate>
+    <section class="client-info admin-login-section" id="admin-login-section">
+        <h3>Admin Login</h3>
+        <form id="admin-login" novalidate>
             <div class="field-group">
-                <label for="create-name">Full Name</label>
-                <input type="text" id="create-name" required>
+                <label for="admin-user">Username</label>
+                <input type="text" id="admin-user" autocomplete="username" required>
             </div>
             <div class="field-group">
-                <label for="create-email">Email</label>
-                <input type="email" id="create-email" required>
+                <label for="admin-pass">Password</label>
+                <input type="password" id="admin-pass" autocomplete="current-password" required>
             </div>
-            <div class="field-group">
-                <label for="create-password">Password (8+ characters)</label>
-                <input type="password" id="create-password" minlength="8" required>
-            </div>
-            <div class="field-group">
-                <label for="create-password-confirm">Re-enter Password</label>
-                <input type="password" id="create-password-confirm" minlength="8" required>
-            </div>
-            <button type="submit">Create Account</button>
+            <p id="admin-message" class="form-message" role="status" aria-live="polite"></p>
+            <button type="submit">Sign In</button>
         </form>
-
-        <p id="create-account-message" class="form-message" role="status" aria-live="polite"></p>
     </section>
 </main>
 
-<script src="create-account.js"></script>
+<script src="admin-login.js"></script>
 <script src="auth-menu.js"></script>
 </body>
 </html>

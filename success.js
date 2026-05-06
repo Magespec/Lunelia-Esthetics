@@ -2,6 +2,7 @@ window.addEventListener("load", async () => {
     const urlParams = new URLSearchParams(window.location.search);
     const sessionId = urlParams.get("session_id");
     const isFree = urlParams.get("free") === "1";
+    const isWaxPassBooking = urlParams.get("waxpass") === "1";
 
     const loadingDiv = document.getElementById("loading");
     const successDiv = document.getElementById("success");
@@ -11,6 +12,49 @@ window.addEventListener("load", async () => {
     const appointmentDate = document.getElementById("appointment-date");
     const appointmentTime = document.getElementById("appointment-time");
     const appointmentServices = document.getElementById("appointment-services");
+
+    if (isWaxPassBooking) {
+        let waxPassData = null;
+        try {
+            const raw = localStorage.getItem("waxPassBookingResult");
+            waxPassData = raw ? JSON.parse(raw) : null;
+        } catch (error) {
+            waxPassData = null;
+        }
+
+        localStorage.removeItem("cart");
+        localStorage.removeItem("total");
+        localStorage.removeItem("pendingBookingDraft");
+        localStorage.removeItem("pendingWaxPassSelection");
+        localStorage.removeItem("waxPassBookingResult");
+
+        if (waxPassData?.appointment) {
+            if (appointmentName) appointmentName.textContent = waxPassData.appointment.name || "Client";
+            if (appointmentDate) appointmentDate.textContent = waxPassData.appointment.date || "-";
+            if (appointmentTime) appointmentTime.textContent = waxPassData.appointment.time || "-";
+            if (appointmentServices) {
+                appointmentServices.textContent = (waxPassData.appointment.services || [])
+                    .map((service) => service?.name || service?.id || "")
+                    .filter(Boolean)
+                    .join(", ") || "-";
+            }
+
+            const detailsBox = document.querySelector(".appointment-details");
+            if (detailsBox && Number.isFinite(Number(waxPassData.remainingCredits))) {
+                const p = document.createElement("p");
+                p.innerHTML = `<strong>Wax Pass Credits Remaining:</strong> ${Number(waxPassData.remainingCredits)}`;
+                detailsBox.appendChild(p);
+            }
+
+            loadingDiv.style.display = "none";
+            successDiv.style.display = "block";
+        } else {
+            loadingDiv.style.display = "none";
+            errorDiv.style.display = "block";
+            if (errorMessage) errorMessage.textContent = "Could not load wax pass booking details. Please contact us to confirm.";
+        }
+        return;
+    }
 
     // --- Free booking (Wax Pass loyalty) path ---
     if (isFree) {
@@ -25,6 +69,7 @@ window.addEventListener("load", async () => {
         localStorage.removeItem("cart");
         localStorage.removeItem("total");
         localStorage.removeItem("pendingBookingDraft");
+        localStorage.removeItem("pendingWaxPassSelection");
         localStorage.removeItem("freeBookingResult");
 
         if (freeData?.appointment) {

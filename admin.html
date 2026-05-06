@@ -19,7 +19,7 @@
                 <a href="about.html">About Us</a>
                 <a href="contact.html">Contact</a>
                 <a href="specials.html">Specials</a>
-                <a href="client.html">Sign In</a>
+                <a href="client-login.html">Sign In</a>
             </div>
         </details>
     </div>
@@ -89,6 +89,9 @@
                     <tbody></tbody>
                 </table>
             </div>
+            <button type="button" id="toggle-past-appointments" class="analytics-toggle" hidden>
+                Show all past appointments
+            </button>
 
             <div id="admin-reschedule-panel" class="client-reschedule-panel admin-reschedule-panel" hidden>
                 <h4>Reschedule Appointment</h4>
@@ -262,6 +265,7 @@
     <p style="text-align:center; padding: 20px;">JavaScript is required to view bookings.</p>
 </noscript>
 
+<script src="serviceData.js"></script>
 <script src="admin.js"></script>
 <script src="auth-menu.js"></script>
 </body>

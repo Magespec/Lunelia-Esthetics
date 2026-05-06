@@ -39,7 +39,8 @@ form?.addEventListener("submit", async (event) => {
             throw new Error(data?.error || "Account creation failed");
         }
 
-        window.location.href = "client.html";
+        form.reset();
+        setMessage(data?.message || "Account created. Please verify your email before signing in.");
     } catch (error) {
         setMessage(error.message || "Unable to create account");
     }
