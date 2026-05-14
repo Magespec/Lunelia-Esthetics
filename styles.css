@@ -395,6 +395,16 @@ body:not(.home-page):not(.booking-page) ul {
     font-style: italic;
 }
 
+.specials-page .wax-pass-notice {
+    font-size: 1rem;
+    font-style: normal;
+    font-weight: 700;
+}
+
+.specials-page .wax-pass-notice-last {
+    margin-bottom: 22px;
+}
+
 @media (min-width: 1024px) {
     #wax-pass-tier-grid {
         flex-wrap: nowrap;

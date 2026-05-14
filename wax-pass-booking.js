@@ -35,6 +35,25 @@ function loadState() {
     cartItems = Array.isArray(parsedCart) ? parsedCart : [];
 }
 
+async function requireClientSession() {
+    try {
+        const response = await fetch("/api/client/session", {
+            method: "GET",
+            credentials: "include"
+        });
+
+        if (!response.ok) {
+            window.location.href = "client-login.html";
+            return false;
+        }
+
+        return true;
+    } catch (error) {
+        window.location.href = "client-login.html";
+        return false;
+    }
+}
+
 function renderCart() {
     if (!cartItemsEl || !totalEl) {
         return;
@@ -162,16 +181,23 @@ form?.addEventListener("submit", handleContinue);
 continueButton?.addEventListener("click", handleContinue);
 
 (function init() {
-    loadState();
-    renderCart();
-
-    if (!purchaseDraft) {
-        setMessage("Wax pass checkout details are missing. Please return to the wax pass page.");
-        if (continueButton) {
-            continueButton.disabled = true;
+    (async () => {
+        const isSignedIn = await requireClientSession();
+        if (!isSignedIn) {
+            return;
         }
-        return;
-    }
 
-    prefillFromSession();
+        const hasCheckoutEntry = sessionStorage.getItem("waxPassCheckoutEntry") === "1";
+        sessionStorage.removeItem("waxPassCheckoutEntry");
+
+        loadState();
+
+        if (!hasCheckoutEntry || !purchaseDraft) {
+            window.location.href = "wax-pass.html";
+            return;
+        }
+
+        renderCart();
+        prefillFromSession();
+    })();
 })();

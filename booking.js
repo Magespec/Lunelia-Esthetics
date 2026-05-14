@@ -3,6 +3,7 @@ const timeSlotsContainer = document.getElementById("time-slots");
 const cartItemsContainer = document.getElementById("cart-items");
 const totalSpan = document.getElementById("total");
 const payBtn = document.getElementById("pay-btn");
+const rewardsDisclaimer = document.getElementById("rewards-disclaimer");
 const bookingDetailsDiv = document.getElementById("booking-details");
 const bookingDateSpan = document.getElementById("booking-date");
 const bookingTimeSpan = document.getElementById("booking-time");
@@ -21,6 +22,15 @@ let selectedTime = null;
 let cart = [];
 let total = 0;
 let appliedSpecials = null; // result from /api/booking/preview-specials
+
+function updateRewardsDisclaimer(isSignedIn) {
+    if (!rewardsDisclaimer) {
+        return;
+    }
+
+    rewardsDisclaimer.textContent = "You must sign in to claim available specials";
+    rewardsDisclaimer.style.display = isSignedIn ? "none" : "";
+}
 
 function getPendingWaxPassSelection() {
     try {
@@ -58,6 +68,20 @@ function getCatalogServiceDuration(serviceId) {
     return Number.isInteger(duration) && duration > 0 ? duration : null;
 }
 
+function isWaxPassSelectionCompatibleWithCart(selection) {
+    if (!selection || !Array.isArray(cart) || cart.length !== 1) {
+        return false;
+    }
+
+    const cartServiceId = String(cart[0]?.id || "").trim();
+    return cartServiceId && cartServiceId === String(selection.serviceId || "").trim();
+}
+
+function getActiveWaxPassSelection() {
+    const selection = getPendingWaxPassSelection();
+    return isWaxPassSelectionCompatibleWithCart(selection) ? selection : null;
+}
+
 async function prefillEmailFromSession() {
     if (!emailInput) {
         return;
@@ -73,17 +97,20 @@ async function prefillEmailFromSession() {
         const sessionEmail = String(data?.client?.email || "").trim();
 
         if (!response.ok || !sessionEmail) {
+            updateRewardsDisclaimer(false);
             emailInput.readOnly = false;
             emailInput.removeAttribute("aria-readonly");
             return;
         }
 
+        updateRewardsDisclaimer(true);
         emailInput.value = sessionEmail;
         emailInput.readOnly = true;
         emailInput.setAttribute("aria-readonly", "true");
         await fetchAndApplySpecials();
         updatePayButtonState();
     } catch (error) {
+        updateRewardsDisclaimer(false);
         emailInput.readOnly = false;
         emailInput.removeAttribute("aria-readonly");
         // Ignore session prefill failures silently.
@@ -185,7 +212,7 @@ function renderCheckoutCart() {
             specialsList.innerHTML = "";
             specials.forEach((s) => {
                 const li = document.createElement("li");
-                li.textContent = s.label;
+                li.textContent = String(s?.label || "Special");
                 specialsList.appendChild(li);
             });
             if (referrerCreditNote) {
@@ -206,7 +233,7 @@ function renderCheckoutCart() {
 
     // Update pay button label for free bookings
     if (payBtn) {
-        const waxPassSelection = getPendingWaxPassSelection();
+        const waxPassSelection = getActiveWaxPassSelection();
         payBtn.textContent = waxPassSelection
             ? "Confirm Wax Pass Booking"
             : (appliedSpecials?.isFree ? "Confirm Free Booking" : "Pay & Confirm Booking");
@@ -324,7 +351,12 @@ function loadCart() {
         }
     }
 
-    const waxPassSelection = getPendingWaxPassSelection();
+    const storedWaxPassSelection = getPendingWaxPassSelection();
+    if (storedWaxPassSelection && !isWaxPassSelectionCompatibleWithCart(storedWaxPassSelection)) {
+        localStorage.removeItem(WAX_PASS_SELECTION_KEY);
+    }
+
+    const waxPassSelection = getActiveWaxPassSelection();
     if (waxPassSelection && cart.length > 0) {
         const selectionDuration = Number(waxPassSelection.serviceDuration);
         const catalogDuration = getCatalogServiceDuration(waxPassSelection.serviceId);
@@ -550,7 +582,7 @@ payBtn.addEventListener("click", async () => {
             await fetchAndApplySpecials();
         }
 
-        const waxPassSelection = getPendingWaxPassSelection();
+        const waxPassSelection = getActiveWaxPassSelection();
 
         localStorage.setItem(
             PENDING_BOOKING_KEY,
@@ -561,7 +593,7 @@ payBtn.addEventListener("click", async () => {
                 services: cart,
                 isFree: appliedSpecials?.isFree || false,
                 isWaxPassBooking: Boolean(waxPassSelection),
-            waxPassSelection,
+                waxPassSelection,
                 appliedSpecials: appliedSpecials || null,
                 customer: {
                     name: nameInput.value.trim(),
@@ -588,4 +620,5 @@ payBtn.addEventListener("click", async () => {
 // Initialize
 loadCart();
 updatePayButtonState();
+updateRewardsDisclaimer(false);
 prefillEmailFromSession();

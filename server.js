@@ -832,9 +832,19 @@ function sanitizeServices(services) {
  * Returns which promotional specials apply for this email + services + referral.
  * priceOverridesCents: { serviceId: priceInCents } — overrides canonical price for that service
  * flatDiscountCents: total cents to subtract from the final amount
- * isFree: true when loyalty wax-pass makes the entire booking complimentary
+ * isFree: true when a future free-booking promotion applies
  */
-async function getApplicableSpecials(email, sanitizedServices, referralEmail) {
+async function getApplicableSpecials(email, sanitizedServices, referralEmail, selectedSpecialTypes = null) {
+    const selectedTypeSet = Array.isArray(selectedSpecialTypes)
+        ? new Set(
+            selectedSpecialTypes
+                .map((type) => String(type || "").trim())
+                .filter(Boolean)
+        )
+        : null;
+
+    const isSelected = (type) => !selectedTypeSet || selectedTypeSet.has(type);
+
     const result = {
         specials: [],
         priceOverridesCents: {},
@@ -877,7 +887,7 @@ async function getApplicableSpecials(email, sanitizedServices, referralEmail) {
             parseInt(referralCreditsEarnedCount.rows[0].count, 10) -
                 parseInt(referralCreditsUsedCount.rows[0].count, 10)
         );
-    if (referralCreditsAvailable > 0) {
+    if (referralCreditsAvailable > 0 && isSelected("referrer_credit")) {
         result.flatDiscountCents += 1500; // $15.00
         result.specials.push({
             type: "referrer_credit",
@@ -896,27 +906,15 @@ async function getApplicableSpecials(email, sanitizedServices, referralEmail) {
 
     if (isNewClient) {
         const hasBrazilian = sanitizedServices.some((s) => s.id === "brazilian");
-        if (hasBrazilian) {
+        if (hasBrazilian && isSelected("new_client_brazilian")) {
             result.priceOverridesCents["brazilian"] = 5500; // $55.00
             result.specials.push({ type: "new_client_brazilian", label: "\u2728 New Client Special: First Brazilian — $55" });
         }
         const hasBikini = sanitizedServices.some((s) => s.id === "bikini-full");
-        if (hasBikini) {
+        if (hasBikini && isSelected("new_client_bikini")) {
             result.priceOverridesCents["bikini-full"] = 4800; // $48.00
             result.specials.push({ type: "new_client_bikini", label: "\u2728 New Client Special: First Bikini Full — $48" });
         }
-    }
-
-    // --- Loyalty (Wax Pass) check ---
-    const completedCount = await pool.query(
-        `SELECT COUNT(*) FROM appointments
-         WHERE LOWER(email) = $1 AND status = 'completed'`,
-        [normalizedEmail]
-    );
-    const numCompleted = parseInt(completedCount.rows[0].count, 10);
-    if (numCompleted > 0 && numCompleted % 9 === 0) {
-        result.isFree = true;
-        result.specials.push({ type: "loyalty_free", label: "\uD83C\uDF89 Wax Pass: Your 10th service is FREE!" });
     }
 
     // --- Referral discount ($15 off, one-time per client) ---
@@ -929,7 +927,7 @@ async function getApplicableSpecials(email, sanitizedServices, referralEmail) {
                  LIMIT 1`,
                 [normalizedReferral]
             );
-            if (referrerExists.rows.length > 0) {
+            if (referrerExists.rows.length > 0 && isSelected("referral")) {
                 result.flatDiscountCents += 1500; // $15.00
                 result.specials.push({ type: "referral", label: "\uD83D\uDC9D Referral Discount: $15 off" });
             }
@@ -1287,6 +1285,49 @@ function requireClient(req, res, next) {
     return next();
 }
 
+function getEmptySpecialsResult() {
+    return {
+        specials: [],
+        availableSpecials: [],
+        priceOverridesCents: {},
+        flatDiscountCents: 0,
+        isFree: false
+    };
+}
+
+function getAuthenticatedClientForRewards(req, res) {
+    const token = getClientTokenFromRequest(req);
+    if (!token) {
+        return null;
+    }
+
+    const payload = verifyClientToken(token);
+    if (!payload) {
+        clearClientSession(res);
+        return null;
+    }
+
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const issuedAtSeconds = Number(payload.iat);
+    const idleAgeSeconds = Number.isFinite(issuedAtSeconds)
+        ? nowSeconds - issuedAtSeconds
+        : Number.POSITIVE_INFINITY;
+
+    if (idleAgeSeconds > Math.floor(CLIENT_IDLE_TIMEOUT_MS / 1000)) {
+        clearClientSession(res);
+        return null;
+    }
+
+    if (!String(req.headers.authorization || "").startsWith("Bearer ")) {
+        refreshClientSession(res, {
+            id: payload.id,
+            email: payload.email
+        });
+    }
+
+    return payload;
+}
+
 function requireCsrf(req, res, next) {
     const csrfCookie = readCookie(req, CLIENT_CSRF_COOKIE);
     const csrfHeader = String(req.headers["x-csrf-token"] || "").trim();
@@ -1443,6 +1484,10 @@ app.get(["/client", "/client.html"], requireClientPage, (req, res) => {
     res.sendFile(path.join(__dirname, "client.html"));
 });
 
+app.get(["/wax-pass-booking", "/wax-pass-booking.html"], requireClientPage, (req, res) => {
+    res.sendFile(path.join(__dirname, "wax-pass-booking.html"));
+});
+
 app.get("/api/admin/session", requireAdmin, async (req, res) => {
     return res.json({ authenticated: true, user: req.adminAuth.user });
 });
@@ -1490,6 +1535,13 @@ app.get("/api/booking/preview-specials", async (req, res) => {
         const email = String(req.query.email || "").trim();
         const referralEmail = String(req.query.referralEmail || "").trim();
         const servicesRaw = String(req.query.services || "[]");
+        const hasSelectedSpecialTypes = Object.prototype.hasOwnProperty.call(
+            req.query,
+            "selectedSpecialTypes"
+        );
+        const selectedSpecialTypesRaw = hasSelectedSpecialTypes
+            ? String(req.query.selectedSpecialTypes || "[]")
+            : null;
 
         let servicesParsed = [];
         try {
@@ -1498,15 +1550,49 @@ app.get("/api/booking/preview-specials", async (req, res) => {
             return res.status(400).json({ error: "Invalid services format" });
         }
 
+        let selectedSpecialTypes = null;
+        if (selectedSpecialTypesRaw !== null) {
+            try {
+                const parsedSelectedSpecialTypes = JSON.parse(selectedSpecialTypesRaw);
+                selectedSpecialTypes = Array.isArray(parsedSelectedSpecialTypes)
+                    ? parsedSelectedSpecialTypes
+                    : null;
+            } catch (e) {
+                selectedSpecialTypes = null;
+            }
+        }
+
         const sanitized = sanitizeServices(servicesParsed) || [];
-        const specialsResult = await getApplicableSpecials(email, sanitized, referralEmail);
+        const authenticatedClient = getAuthenticatedClientForRewards(req, res);
+        const requestedEmail = normalizeEmail(email);
+        const sessionEmail = normalizeEmail(authenticatedClient?.email || "");
+        const rewardsEligible = Boolean(authenticatedClient) && requestedEmail && requestedEmail === sessionEmail;
+
+        const specialsResult = rewardsEligible
+            ? await getApplicableSpecials(
+                authenticatedClient.email,
+                sanitized,
+                referralEmail,
+                selectedSpecialTypes
+            )
+            : getEmptySpecialsResult();
+
+        if (rewardsEligible) {
+            const availableSpecialsResult = await getApplicableSpecials(
+                authenticatedClient.email,
+                sanitized,
+                referralEmail
+            );
+            specialsResult.availableSpecials = availableSpecialsResult.specials || [];
+        }
+
         res.json(specialsResult);
     } catch (err) {
         return sendInternalError(res, "Preview specials error:", err);
     }
 });
 
-// Loyalty-free booking: skip Stripe when the Wax Pass makes the appointment complimentary
+// Free booking path: skip Stripe when a free-booking promotion applies
 app.post("/api/free-booking", async (req, res) => {
     try {
         const { date, time, services, customer, consent } = req.body;
@@ -1517,6 +1603,13 @@ app.post("/api/free-booking", async (req, res) => {
         const customerPhone = String(customer?.phone || "").trim();
         const referralEmail = String(customer?.referralEmail || "").trim();
         const timezone = String(customer?.timezone || "").trim();
+        const hasSelectedSpecialTypes = Object.prototype.hasOwnProperty.call(
+            req.body || {},
+            "selectedSpecialTypes"
+        );
+        const selectedSpecialTypes = hasSelectedSpecialTypes && Array.isArray(req.body?.selectedSpecialTypes)
+            ? req.body.selectedSpecialTypes
+            : null;
         const consentAccepted = consent?.accepted === true;
         const consentSignature = String(consent?.signature || "").trim();
 
@@ -1528,8 +1621,20 @@ app.post("/api/free-booking", async (req, res) => {
             return res.status(400).json({ error: "Missing or invalid fields" });
         }
 
+        const authenticatedClient = getAuthenticatedClientForRewards(req, res);
+        const sessionEmail = normalizeEmail(authenticatedClient?.email || "");
+        const bookingEmail = normalizeEmail(customerEmail);
+        const rewardsEligible = Boolean(authenticatedClient) && bookingEmail && bookingEmail === sessionEmail;
+
         // Re-verify loyalty eligibility server-side
-        const specialsResult = await getApplicableSpecials(customerEmail, sanitizedServices, referralEmail);
+        const specialsResult = rewardsEligible
+            ? await getApplicableSpecials(
+                authenticatedClient.email,
+                sanitizedServices,
+                referralEmail,
+                selectedSpecialTypes
+            )
+            : getEmptySpecialsResult();
         if (!specialsResult.isFree) {
             return res.status(400).json({ error: "Free booking not applicable for this account" });
         }
@@ -1613,7 +1718,7 @@ app.post("/api/free-booking", async (req, res) => {
                 html: `
                     <h2>Your Booking is Confirmed!</h2>
                     <p>Hi ${customerName || "Valued Client"},</p>
-                    <p>Thank you for your loyalty! Your Wax Pass reward has been applied — this appointment is on the house.</p>
+                    <p>Your promotional reward has been applied — this appointment is on the house.</p>
                     <p><strong>Date:</strong> ${date}</p>
                     <p><strong>Time:</strong> ${time}</p>
                     <p><strong>Services:</strong> ${sanitizedServices.map((s) => s.name).join(", ")}</p>
@@ -1643,6 +1748,13 @@ app.post("/api/create-payment-intent", async (req, res) => {
         const customerPhone = customer?.phone?.trim() || "";
         const referralEmail = customer?.referralEmail?.trim() || "";
         const timezone = customer?.timezone?.trim() || "";
+        const hasSelectedSpecialTypes = Object.prototype.hasOwnProperty.call(
+            req.body || {},
+            "selectedSpecialTypes"
+        );
+        const selectedSpecialTypes = hasSelectedSpecialTypes && Array.isArray(req.body?.selectedSpecialTypes)
+            ? req.body.selectedSpecialTypes
+            : null;
         const consentAccepted = consent?.accepted === true;
         const consentSignature = String(consent?.signature || "").trim();
 
@@ -1662,6 +1774,11 @@ app.post("/api/create-payment-intent", async (req, res) => {
             return res.status(400).json({ error: "Missing or invalid fields" });
         }
 
+        const authenticatedClient = getAuthenticatedClientForRewards(req, res);
+        const sessionEmail = normalizeEmail(authenticatedClient?.email || "");
+        const bookingEmail = normalizeEmail(customerEmail);
+        const rewardsEligible = Boolean(authenticatedClient) && bookingEmail && bookingEmail === sessionEmail;
+
         const requestedDuration = getServicesTotalDuration(sanitizedServices);
 
         if (!Number.isInteger(requestedDuration) || requestedDuration <= 0) {
@@ -1669,7 +1786,14 @@ app.post("/api/create-payment-intent", async (req, res) => {
         }
 
         // Re-verify applicable specials server-side so the client cannot fake discounts
-        const specialsResult = await getApplicableSpecials(customerEmail, sanitizedServices, referralEmail);
+        const specialsResult = rewardsEligible
+            ? await getApplicableSpecials(
+                authenticatedClient.email,
+                sanitizedServices,
+                referralEmail,
+                selectedSpecialTypes
+            )
+            : getEmptySpecialsResult();
         const appliedReferralEmail = specialsResult.specials.some((s) => s.type === "referral")
             ? referralEmail
             : "";

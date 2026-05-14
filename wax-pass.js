@@ -1,4 +1,5 @@
 const messageEl = document.getElementById("wax-pass-message");
+const signInRequiredNoticeEl = document.getElementById("wax-pass-signin-required");
 const addButtons = Array.from(document.querySelectorAll(".wax-pass-add-btn"));
 const cartItemsList = document.getElementById("cart-items");
 const totalElement = document.getElementById("total");
@@ -33,6 +34,7 @@ const servicesByTier = {
 };
 let cart = [];
 let total = 0;
+let isClientSignedIn = false;
 
 function setMessage(text) {
     if (messageEl) {
@@ -183,16 +185,39 @@ async function loadServicesForTier(tier) {
     renderTierSummary(numericTier);
 }
 
-async function ensureClientSession() {
+async function checkClientSession() {
     try {
         await fetchJson("/api/client/session");
+        return true;
     } catch (error) {
-        window.location.href = "client-login.html";
-        throw error;
+        return false;
     }
 }
 
+function updatePurchaseAccessUi() {
+    if (signInRequiredNoticeEl) {
+        signInRequiredNoticeEl.style.display = isClientSignedIn ? "none" : "";
+    }
+
+    addButtons.forEach((button) => {
+        button.disabled = !isClientSignedIn;
+        button.classList.toggle("locked-submit", !isClientSignedIn);
+    });
+
+    if (checkoutButton) {
+        checkoutButton.disabled = !isClientSignedIn;
+        checkoutButton.classList.toggle("locked-submit", !isClientSignedIn);
+    }
+
+    setMessage(isClientSignedIn ? "" : "You must be signed in to buy a wax pass.");
+}
+
 function addTierSelectionToCart(tier) {
+    if (!isClientSignedIn) {
+        setMessage("You must be signed in to buy a wax pass.");
+        return;
+    }
+
     const numericTier = Number(tier);
     const serviceSelect = tierUi[numericTier]?.serviceSelect;
     const serviceId = String(serviceSelect?.value || "");
@@ -233,6 +258,11 @@ function addTierSelectionToCart(tier) {
 }
 
 async function handleCartCheckout() {
+    if (!isClientSignedIn) {
+        setMessage("You must be signed in to buy a wax pass.");
+        return;
+    }
+
     if (cart.length === 0) {
         setCartMessage("Please add at least one wax pass to cart.");
         return;
@@ -259,6 +289,7 @@ async function handleCartCheckout() {
                 totalPaid: Number(item.totalPaid || 0)
             })
         );
+        sessionStorage.setItem("waxPassCheckoutEntry", "1");
 
         window.location.href = "wax-pass-booking.html";
     } catch (error) {
@@ -279,7 +310,8 @@ checkoutButton?.addEventListener("click", handleCartCheckout);
 
 (async function init() {
     try {
-        await ensureClientSession();
+        isClientSignedIn = await checkClientSession();
+        updatePurchaseAccessUi();
 
         tiers = await fetchJson("/api/wax-passes/tiers");
         tiers.forEach((tier) => {
